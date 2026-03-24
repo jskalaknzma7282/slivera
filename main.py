@@ -2,10 +2,10 @@ import os
 import re
 import asyncio
 import logging
-from datetime import datetime, time, timedelta
-from typing import Dict, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Optional
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
@@ -122,49 +122,6 @@ class Database:
         async with self.pool.acquire() as conn:
             await conn.execute("DELETE FROM active_sessions WHERE user_id = $1", user_id)
 
-    async def get_daily_report(self):
-        start_time = datetime.now(MOSCOW_TZ).replace(hour=9, minute=30, second=0, microsecond=0)
-        end_time = datetime.now(MOSCOW_TZ).replace(hour=20, minute=0, second=0, microsecond=0)
-        
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT u.user_id, u.username, u.balance, o.phone, o.confirmed_at
-                FROM users u
-                JOIN orders o ON u.user_id = o.user_id
-                WHERE o.status = 'confirmed'
-                AND o.confirmed_at BETWEEN $1 AND $2
-                ORDER BY u.username
-            """, start_time, end_time)
-            
-            if not rows:
-                return None
-            
-            report_lines = []
-            current_user = None
-            user_phones = []
-            user_total = 0
-            
-            for row in rows:
-                if current_user != row["user_id"]:
-                    if current_user:
-                        report_lines.append(f"{current_username} (ID: {current_user}) • {user_total:.2f} USDT")
-                        for phone in user_phones:
-                            report_lines.append(f"  {phone} • 4.00 USDT")
-                        report_lines.append("")
-                    current_user = row["user_id"]
-                    current_username = row["username"] or f"user_{row['user_id']}"
-                    user_phones = []
-                    user_total = 0
-                user_phones.append(row["phone"])
-                user_total += 4.0
-            
-            if current_user:
-                report_lines.append(f"{current_username} (ID: {current_user}) • {user_total:.2f} USDT")
-                for phone in user_phones:
-                    report_lines.append(f"  {phone} • 4.00 USDT")
-            
-            return "\n".join(report_lines)
-
     async def add_order_message(self, order_id: int, message_id: int, is_admin: bool = False):
         async with self.pool.acquire() as conn:
             if is_admin:
@@ -191,25 +148,6 @@ def normalize_phone(phone: str) -> Optional[str]:
 def format_time(dt: datetime) -> str:
     return dt.astimezone(MOSCOW_TZ).strftime("%H:%M UTC")
 
-def format_timer(seconds: int) -> str:
-    return f"{seconds:02d}"
-
-async def send_or_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, 
-                       reply_markup: InlineKeyboardMarkup = None, 
-                       message_id: int = None, parse_mode: str = ParseMode.HTML):
-    if message_id:
-        try:
-            await context.bot.edit_message_text(
-                text, chat_id, message_id, parse_mode=parse_mode, reply_markup=reply_markup
-            )
-        except:
-            pass
-    else:
-        msg = await context.bot.send_message(
-            chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup
-        )
-        return msg.message_id
-
 async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
     text = (
         "<blockquote>🔖 заявка создана</blockquote>\n\n"
@@ -233,9 +171,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = None
     if user_id == ADMIN_ID:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ новая заявка", callback_data="new_order")]
-        ])
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("➕ новая заявка")]],
+            resize_keyboard=True
+        )
     
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
@@ -258,22 +197,47 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     now = datetime.now(MOSCOW_TZ)
-    if now.hour >= 22:
-        text = "✏️ Отчетов сегодня нету"
-        await update.message.reply_text(text)
-        return
+    start_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    end_time = now.replace(hour=20, minute=0, second=0, microsecond=0)
     
-    report = await db.get_daily_report()
-    if not report:
-        text = "✏️ Отчетов сегодня нету"
-        await update.message.reply_text(text)
-        return
-    
-    filename = f"report_{now.strftime('%Y%m%d')}.txt"
-    await update.message.reply_document(
-        document=report.encode(),
-        filename=filename
-    )
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT u.user_id, u.username, o.phone, o.confirmed_at
+            FROM users u
+            JOIN orders o ON u.user_id = o.user_id
+            WHERE o.status = 'confirmed'
+            AND o.confirmed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' BETWEEN $1 AND $2
+            ORDER BY u.username
+        """, start_time, end_time)
+        
+        if not rows:
+            await update.message.reply_text("✏️ Отчетов сегодня нету")
+            return
+        
+        users_data = {}
+        for row in rows:
+            uid = row["user_id"]
+            if uid not in users_data:
+                users_data[uid] = {
+                    "username": row["username"] or f"user_{uid}",
+                    "phones": [],
+                    "total": 0
+                }
+            users_data[uid]["phones"].append(row["phone"])
+            users_data[uid]["total"] += 4.0
+        
+        lines = []
+        for uid, data in users_data.items():
+            lines.append(f"{data['username']} (ID: {uid}) • {data['total']:.2f} USDT")
+            for phone in data["phones"]:
+                lines.append(f"  {phone} • 4.00 USDT")
+            lines.append("")
+        
+        report_text = "\n".join(lines)
+        await update.message.reply_document(
+            document=report_text.encode(),
+            filename=f"report_{now.strftime('%Y%m%d')}.txt"
+        )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -285,6 +249,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text.startswith("вывод"):
         await withdraw_command(update, context)
+        return
+    
+    if text == "➕ новая заявка" and user_id == ADMIN_ID:
+        await publish_new_order(context)
         return
     
     session = await db.get_active_session(user_id)
@@ -393,11 +361,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.answer()
     
-    if data == "new_order" and user_id == ADMIN_ID:
-        await publish_new_order(context)
-        await query.message.delete()
-        return
-    
     if data == "take_order":
         session = await db.get_active_session(user_id)
         if session:
@@ -437,8 +400,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await db.clear_active_session(user_id)
         await db.update_order_status(order_id, "cancelled")
-        
-        order = await db.pool.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
         
         if phone:
             admin_text = (
@@ -587,13 +548,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("обновить", callback_data=f"check_status_{order_id}")]
         ])
-        await context.bot.edit_message_text(
-            user_text,
-            order["user_id"],
-            order["message_id"],
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
-        )
+        
+        order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+        if order_row and order_row["message_id"]:
+            try:
+                await context.bot.edit_message_text(
+                    user_text,
+                    order["user_id"],
+                    order_row["message_id"],
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            except:
+                pass
         
         await query.message.delete()
         return
