@@ -380,7 +380,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_id = await db.create_order(user_id, "", "taken")
         await db.set_active_session(user_id, order_id, "waiting_phone", {})
         
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except:
+            pass
         
         msg = await context.bot.send_message(
             user_id,
@@ -762,9 +765,22 @@ def main():
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(db.init())
     
-    app.run_polling()
+    async def init_and_start():
+        await db.init()
+        await app.bot.delete_webhook()
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        await asyncio.Event().wait()
+    
+    try:
+        loop.run_until_complete(init_and_start())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.run_until_complete(app.stop())
+        loop.close()
 
 if __name__ == "__main__":
     main()
