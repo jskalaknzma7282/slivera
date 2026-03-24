@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -61,7 +62,7 @@ class Database:
                     user_id BIGINT PRIMARY KEY,
                     order_id INTEGER,
                     step TEXT,
-                    data JSONB,
+                    data TEXT,
                     started_at TIMESTAMP DEFAULT NOW()
                 )
             """)
@@ -97,7 +98,7 @@ class Database:
             if confirmed_at:
                 await conn.execute(
                     "UPDATE orders SET status = $1, confirmed_at = $2 WHERE id = $3",
-                    status, confirmed_at, order_id
+                    status, confirmed_at.replace(tzinfo=None), order_id
                 )
             else:
                 await conn.execute(
@@ -107,7 +108,16 @@ class Database:
 
     async def get_active_session(self, user_id: int):
         async with self.pool.acquire() as conn:
-            return await conn.fetchrow("SELECT * FROM active_sessions WHERE user_id = $1", user_id)
+            row = await conn.fetchrow("SELECT * FROM active_sessions WHERE user_id = $1", user_id)
+            if row:
+                return {
+                    "user_id": row["user_id"],
+                    "order_id": row["order_id"],
+                    "step": row["step"],
+                    "data": json.loads(row["data"]) if row["data"] else {},
+                    "started_at": row["started_at"]
+                }
+            return None
 
     async def set_active_session(self, user_id: int, order_id: int, step: str, data: dict = None):
         async with self.pool.acquire() as conn:
@@ -116,7 +126,7 @@ class Database:
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (user_id) DO UPDATE SET
                 order_id = $2, step = $3, data = $4, started_at = NOW()
-            """, user_id, order_id, step, data or {})
+            """, user_id, order_id, step, json.dumps(data or {}))
 
     async def clear_active_session(self, user_id: int):
         async with self.pool.acquire() as conn:
@@ -206,9 +216,9 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             FROM users u
             JOIN orders o ON u.user_id = o.user_id
             WHERE o.status = 'confirmed'
-            AND o.confirmed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow' BETWEEN $1 AND $2
+            AND o.confirmed_at BETWEEN $1 AND $2
             ORDER BY u.username
-        """, start_time, end_time)
+        """, start_time.replace(tzinfo=None), end_time.replace(tzinfo=None))
         
         if not rows:
             await update.message.reply_text("✏️ Отчетов сегодня нету")
@@ -386,7 +396,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await db.add_order_message(order_id, msg.message_id)
         
-        context.application.create_task(start_timer(context, user_id, order_id, "phone", 60))
+        asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
         return
     
     if data.startswith("cancel_"):
@@ -395,7 +405,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not session or session["order_id"] != order_id:
             return
         
-        step = session["step"]
         phone = session["data"].get("phone") if session["data"] else None
         
         await db.clear_active_session(user_id)
@@ -446,7 +455,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await db.add_order_message(order_id, user_msg.message_id)
         
-        context.application.create_task(start_timer(context, order["user_id"], order_id, "code", 60))
+        asyncio.create_task(start_timer(context, order["user_id"], order_id, "code", 60))
         
         await query.message.delete()
         return
@@ -590,7 +599,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=keyboard
         )
         
-        context.application.create_task(start_fund_timer(context, order["user_id"], order_id, order["phone"]))
+        asyncio.create_task(start_fund_timer(context, order["user_id"], order_id, order["phone"]))
         return
     
     if data.startswith("retry_phone"):
@@ -606,7 +615,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
             await db.add_order_message(session["order_id"], msg.message_id)
-            context.application.create_task(start_timer(context, user_id, session["order_id"], "phone", 60))
+            asyncio.create_task(start_timer(context, user_id, session["order_id"], "phone", 60))
         return
     
     if data.startswith("retry_code"):
@@ -622,7 +631,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
             await db.add_order_message(session["order_id"], msg.message_id)
-            context.application.create_task(start_timer(context, user_id, session["order_id"], "code", 60))
+            asyncio.create_task(start_timer(context, user_id, session["order_id"], "code", 60))
         return
 
 async def start_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id: int, timer_type: str, seconds: int):
