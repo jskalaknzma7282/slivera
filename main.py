@@ -3,7 +3,7 @@ import re
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -374,11 +374,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "take_order":
         session = await db.get_active_session(user_id)
         if session:
-            await query.message.reply_text(
-                "<blockquote>📌 ошибка</blockquote>\n\n"
-                "<i>• для того чтобы взять другую заявку - закончите сперва эту!</i>",
-                parse_mode=ParseMode.HTML
-            )
+            await query.answer("У вас уже есть активная заявка!", show_alert=True)
             return
         
         order_id = await db.create_order(user_id, "", "taken")
@@ -386,7 +382,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.message.delete()
         
-        msg = await query.message.reply_text(
+        msg = await context.bot.send_message(
+            user_id,
             "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
             f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
             parse_mode=ParseMode.HTML,
@@ -606,7 +603,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = await db.get_active_session(user_id)
         if session and session["step"] == "waiting_phone":
             await query.message.delete()
-            msg = await query.message.reply_text(
+            msg = await context.bot.send_message(
+                user_id,
                 "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
                 f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
                 parse_mode=ParseMode.HTML,
@@ -622,7 +620,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = await db.get_active_session(user_id)
         if session and session["step"] == "waiting_code":
             await query.message.delete()
-            msg = await query.message.reply_text(
+            msg = await context.bot.send_message(
+                user_id,
                 "<blockquote>📮 запрошено SMS</blockquote>\n\n"
                 f"<i>• введите код из смс, у вас ровно: <code>60</code></i>",
                 parse_mode=ParseMode.HTML,
