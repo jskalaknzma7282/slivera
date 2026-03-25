@@ -618,23 +618,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.clear_active_session(order["user_id"])
         await db.update_order_status(order_id, "rejected")
         
-        order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
-        if order_row and order_row["message_id"]:
-            user_text = (
-                f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-                f"<i>статус: отменена</i>\n"
-                f"<i>причина: отклонена администрацией</i>"
-            )
+        # Отправляем сообщение пользователю
+        user_text = (
+            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+            f"<i>статус: отменена</i>\n"
+            f"<i>причина: отклонена администрацией</i>"
+        )
+        await context.bot.send_message(
+            order["user_id"],
+            user_text,
+            parse_mode=ParseMode.HTML
+        )
+        
+        # Удаляем старое сообщение пользователя
+        old_msg_id = order["message_id"]
+        if old_msg_id:
             try:
-                await context.bot.edit_message_text(
-                    user_text,
-                    order["user_id"],
-                    order_row["message_id"],
-                    parse_mode=ParseMode.HTML
-                )
-                logger.info(f"Edited message {order_row['message_id']} for user {order['user_id']}")
-            except Exception as e:
-                logger.error(f"Failed to edit message: {e}")
+                await context.bot.delete_message(order["user_id"], old_msg_id)
+            except:
+                pass
         
         await query.message.delete()
         await publish_new_order(context)
@@ -649,6 +651,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.clear_active_session(order["user_id"])
         await db.update_order_status(order_id, "rejected")
         
+        # Редактируем сообщение пользователя
         order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
         if order_row and order_row["message_id"]:
             user_text = (
