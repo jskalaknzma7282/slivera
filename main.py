@@ -168,7 +168,7 @@ def format_time(dt: datetime) -> str:
     return dt.astimezone(MOSCOW_TZ).strftime("%H:%M UTC")
 
 async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
-    bot_username = (await context.bot.get_me()).username
+    bot_username = "JetSms_Robot"
     text = (
         "<blockquote>🔖 заявка создана</blockquote>\n\n"
         "<i>• для принятия заявки нажмите кнопку ниже:</i>"
