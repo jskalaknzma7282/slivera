@@ -35,7 +35,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     username TEXT,
-                    balance DECIMAL DEFAULT 10.0
+                    balance DECIMAL DEFAULT 0
                 )
             """)
             await conn.execute("""
@@ -67,10 +67,10 @@ class Database:
             row = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
             if not row:
                 await conn.execute(
-                    "INSERT INTO users (user_id, username, balance) VALUES ($1, $2, 10.0)",
+                    "INSERT INTO users (user_id, username, balance) VALUES ($1, $2, 0)",
                     user_id, username or ""
                 )
-                return {"user_id": user_id, "username": username, "balance": 10.0}
+                return {"user_id": user_id, "username": username, "balance": 0}
             return dict(row)
 
     async def update_balance(self, user_id: int, amount: float):
@@ -79,6 +79,15 @@ class Database:
                 "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
                 amount, user_id
             )
+            logger.info(f"Updated balance for user {user_id}: +{amount}")
+
+    async def set_balance(self, user_id: int, amount: float):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            logger.info(f"Set balance for user {user_id}: {amount}")
 
 db = Database()
 
@@ -148,8 +157,7 @@ def update_balance_api():
     new_balance = data.get('balance')
     
     async def update():
-        async with db.pool.acquire() as conn:
-            await conn.execute("UPDATE users SET balance = $1 WHERE user_id = $2", new_balance, user_id)
+        await db.set_balance(user_id, new_balance)
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -163,15 +171,79 @@ def run_flask():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
-    await db.get_user(user_id, username)
+    
+    user = await db.get_user(user_id, username)
+    
+    # Если баланс 0, выдаем 10 USDT
+    if user["balance"] == 0:
+        await db.update_balance(user_id, 10)
+        await update.message.reply_text(
+            "<b>🎁 Вам начислено 10 USDT!</b>\n\n"
+            "<i>Используйте /profile и /blackjack</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
     
     await update.message.reply_text(
         "<b>👋 Добро пожаловать в MaxHub!</b>\n\n"
         "<i>Доступные команды:</i>\n"
         "<code>/profile</code> - Ваш профиль\n"
-        "<code>/blackjack</code> - Играть в Black Jack",
+        "<code>/blackjack</code> - Играть в Black Jack\n"
+        "<code>/addmoney 100</code> - Пополнить баланс (админ)\n"
+        "<code>/bal</code> - Проверить баланс",
         parse_mode=ParseMode.HTML
     )
+
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = await db.get_user(user_id)
+    await update.message.reply_text(
+        f"<b>💳 Ваш баланс</b>\n\n"
+        f"<i><code>{user['balance']:.2f}</code> USDT</i>",
+        parse_mode=ParseMode.HTML
+    )
+
+async def addmoney_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # Только для админа
+    if user_id != int(os.getenv("ADMIN_ID", 0)):
+        await update.message.reply_text("⛔ Только для админа")
+        return
+    
+    if not context.args or len(context.args) != 2:
+        await update.message.reply_text(
+            "<b>❌ Ошибка</b>\n\n"
+            "<i>Используйте: /addmoney user_id сумма</i>\n"
+            "Пример: /addmoney 123456789 50",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        target_user = int(context.args[0])
+        amount = float(context.args[1])
+        
+        await db.update_balance(target_user, amount)
+        await update.message.reply_text(
+            f"<b>✅ Успешно!</b>\n\n"
+            f"<i>Пользователю <code>{target_user}</code> начислено <code>{amount:.2f}</code> USDT</i>",
+            parse_mode=ParseMode.HTML
+        )
+        
+        # Отправляем уведомление пользователю
+        try:
+            await context.bot.send_message(
+                target_user,
+                f"<b>💰 Пополнение баланса</b>\n\n"
+                f"<i>Вам начислено <code>{amount:.2f}</code> USDT</i>",
+                parse_mode=ParseMode.HTML
+            )
+        except:
+            pass
+            
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([[
@@ -191,7 +263,7 @@ async def blackjack_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "<b>🎲 Black Jack (21)</b>\n\n"
         "<i>Сделайте ставку и попробуйте обыграть дилера!</i>\n"
-        "💰 Начальный баланс: 10 USDT",
+        "💰 Баланс можно проверить командой /bal",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
     )
@@ -210,6 +282,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("profile", profile_command))
     app.add_handler(CommandHandler("blackjack", blackjack_command))
+    app.add_handler(CommandHandler("bal", balance_command))
+    app.add_handler(CommandHandler("addmoney", addmoney_command))
     
     logger.info("Бот запущен")
     app.run_polling(drop_pending_updates=True)
