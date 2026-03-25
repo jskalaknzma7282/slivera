@@ -103,6 +103,19 @@
             font-size: 11px;
             color: rgba(255,255,255,0.4);
         }
+        .menu-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 15px;
+        }
+        .menu-buttons button {
+            flex: none;
+            padding: 8px 16px;
+            font-size: 14px;
+            background: #ffaa33;
+            color: #2a1a0a;
+        }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -139,6 +152,10 @@
             <button id="standBtn">✋ ХВАТИТ</button>
         </div>
         <div id="gameMessage" class="message"></div>
+    </div>
+    <div class="menu-buttons">
+        <button onclick="location.href='/slots'">🎰 Слот</button>
+        <button onclick="location.href='/'">🏠 Главная</button>
     </div>
     <div class="footer">By Jonathan ✨</div>
 </div>
