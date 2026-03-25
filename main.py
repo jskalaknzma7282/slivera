@@ -632,8 +632,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     order_row["message_id"],
                     parse_mode=ParseMode.HTML
                 )
-            except:
-                pass
+                logger.info(f"Edited message {order_row['message_id']} for user {order['user_id']}")
+            except Exception as e:
+                logger.error(f"Failed to edit message: {e}")
         
         await query.message.delete()
         await publish_new_order(context)
@@ -666,8 +667,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard
                 )
-            except:
-                pass
+                logger.info(f"Edited message {order_row['message_id']} for user {order['user_id']}")
+            except Exception as e:
+                logger.error(f"Failed to edit message: {e}")
+        else:
+            user_text = (
+                f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+                f"<i>статус: отменена</i>\n"
+                f"<i>причина: уже зарегистрирован</i>"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+            ])
+            await context.bot.send_message(
+                order["user_id"],
+                user_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
         
         await query.message.delete()
         await publish_new_order(context)
@@ -701,8 +718,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard
                 )
-            except:
-                pass
+                logger.info(f"Edited message {order_row['message_id']} for user {order['user_id']}")
+            except Exception as e:
+                logger.error(f"Failed to edit message: {e}")
         
         await query.message.delete()
         await publish_new_order(context)
