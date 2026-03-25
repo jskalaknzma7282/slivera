@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
@@ -135,12 +135,18 @@ class Database:
         async with self.pool.acquire() as conn:
             await conn.execute("DELETE FROM active_sessions WHERE user_id = $1", user_id)
 
-    async def add_order_message(self, order_id: int, message_id: int):
+    async def add_order_message(self, order_id: int, message_id: int, is_admin: bool = False):
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE orders SET message_id = $1 WHERE id = $2",
-                message_id, order_id
-            )
+            if is_admin:
+                await conn.execute(
+                    "UPDATE orders SET admin_message_id = $1 WHERE id = $2",
+                    message_id, order_id
+                )
+            else:
+                await conn.execute(
+                    "UPDATE orders SET message_id = $1 WHERE id = $2",
+                    message_id, order_id
+                )
     
     async def clear_all_sessions(self):
         async with self.pool.acquire() as conn:
@@ -162,12 +168,16 @@ def format_time(dt: datetime) -> str:
     return dt.astimezone(MOSCOW_TZ).strftime("%H:%M UTC")
 
 async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
+    bot_username = (await context.bot.get_me()).username
     text = (
         "<blockquote>🔖 заявка создана</blockquote>\n\n"
         "<i>• для принятия заявки нажмите кнопку ниже:</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("принять заявку", callback_data="take_order")]
+        [
+            InlineKeyboardButton("принять заявку", callback_data="take_order"),
+            InlineKeyboardButton("💬 открыть чат", url=f"https://t.me/{bot_username}")
+        ]
     ])
     await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
@@ -184,9 +194,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = None
     if user_id == ADMIN_ID:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ новая заявка", callback_data="new_order")]
-        ])
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("➕ новая заявка")]],
+            resize_keyboard=True
+        )
     
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
@@ -251,6 +262,125 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filename=f"report_{now.strftime('%Y%m%d')}.txt"
         )
 
+async def start_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id: int, timer_type: str, seconds: int):
+    for i in range(seconds, 0, -1):
+        session = await db.get_active_session(user_id)
+        if not session or session["order_id"] != order_id:
+            return
+        
+        text = ""
+        if timer_type == "phone":
+            text = (
+                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
+                f"<i>• формат не важен, на отправку материала у вас ровно: <code>{i}</code></i>"
+            )
+        else:
+            text = (
+                "<blockquote>📮 запрошено SMS</blockquote>\n\n"
+                f"<i>• введите код из смс, у вас ровно: <code>{i}</code></i>"
+            )
+        
+        order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+        if order and order["message_id"]:
+            try:
+                await context.bot.edit_message_text(
+                    text, user_id, order["message_id"],
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
+                    ])
+                )
+            except:
+                pass
+        
+        await asyncio.sleep(1)
+    
+    session = await db.get_active_session(user_id)
+    if not session or session["order_id"] != order_id:
+        return
+    
+    await db.clear_active_session(user_id)
+    
+    phone = session["data"].get("phone") if session["data"] else None
+    
+    if phone:
+        user_text = (
+            f"<blockquote>📌 заявка <code>#{phone}</code></blockquote>\n\n"
+            f"<i>статус: время вышло</i>\n"
+            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+        )
+    else:
+        user_text = (
+            f"<blockquote>📌 заявка</blockquote>\n\n"
+            f"<i>статус: время вышло</i>\n"
+            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+        )
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+    ])
+    
+    order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+    if order and order["message_id"]:
+        try:
+            await context.bot.edit_message_text(
+                user_text, user_id, order["message_id"],
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+        except:
+            pass
+    
+    await publish_new_order(context)
+
+async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id: int, phone: str):
+    for i in range(600, 0, -1):
+        minutes = i // 60
+        seconds = i % 60
+        timer_text = f"{minutes:02d}:{seconds:02d}"
+        
+        order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+        if order and order["message_id"]:
+            text = (
+                f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
+                f"<i>статус: подтверждена</i>\n"
+                f"<i>до зачисления средств: <code>{timer_text}</code></i>\n"
+                f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            )
+            try:
+                await context.bot.edit_message_text(
+                    text, user_id, order["message_id"],
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+                    ])
+                )
+            except:
+                pass
+        
+        await asyncio.sleep(1)
+    
+    await db.update_balance(user_id, 4.0)
+    
+    user_text = (
+        f"<blockquote>🎉 денюжки</blockquote>\n\n"
+        f"<i>ваш счет пополнен: + <code>4.00</code> USDT</i>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+    ])
+    
+    order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+    if order and order["message_id"]:
+        try:
+            await context.bot.edit_message_text(
+                user_text, user_id, order["message_id"],
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+        except:
+            pass
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -261,6 +391,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text.startswith("вывод"):
         await withdraw_command(update, context)
+        return
+    
+    if text == "➕ новая заявка" and user_id == ADMIN_ID:
+        await publish_new_order(context)
         return
     
     session = await db.get_active_session(user_id)
@@ -306,13 +440,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_msg = await context.bot.send_message(
             ADMIN_ID, admin_text, parse_mode=ParseMode.HTML, reply_markup=keyboard
         )
-        await db.add_order_message(order_id, admin_msg.message_id)
+        await db.add_order_message(order_id, admin_msg.message_id, is_admin=True)
         
         await update.message.reply_text(
             "<blockquote>📮 номер в обработке</blockquote>\n\n"
             "<i>• ожидайте запроса SMS (в среднем занимает ≈ 2м)</i>",
             parse_mode=ParseMode.HTML
         )
+        return
+    
+    if step == "waiting_code":
+        if not text.isdigit() or len(text) != 6:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("повторить", callback_data="retry_code")]
+            ])
+            await update.message.reply_text(
+                "<blockquote>📌 ошибка</blockquote>\n\n"
+                "<i>• введен неккоректный код! формат: хххххх</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+            return
+        
+        phone = data.get("phone")
+        user = await db.get_user(user_id)
+        
+        admin_text = (
+            f"<blockquote>🔖 SMS! заявка <code>#{phone}</code></blockquote>\n\n"
+            f"<i>код: <code>{text}</code></i>\n"
+            f"<i>от: {user['username'] or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
+            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("+", callback_data=f"admin_confirm_{order_id}"),
+                InlineKeyboardButton("-", callback_data=f"admin_reject_registered_{order_id}"),
+                InlineKeyboardButton("ош", callback_data=f"admin_error_{order_id}")
+            ]
+        ])
+        admin_msg = await context.bot.send_message(
+            ADMIN_ID, admin_text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+        )
+        await db.add_order_message(order_id, admin_msg.message_id, is_admin=True)
+        
+        await db.update_order_status(order_id, "code_sent")
+        await db.set_active_session(user_id, order_id, "waiting_confirmation", {"phone": phone, "code": text})
+        
+        user_msg = await update.message.reply_text(
+            f"<blockquote>📮 SMS заявка <code>#{phone}</code></blockquote>\n\n"
+            f"<i>статус: код ожидает подтверждения</i>\n"
+            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("обновить", callback_data=f"check_status_{order_id}")]
+            ])
+        )
+        await db.add_order_message(order_id, user_msg.message_id)
         return
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -323,19 +506,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Callback: {data} from {user_id}")
     await query.answer()
     
-    if data == "new_order" and user_id == ADMIN_ID:
-        await publish_new_order(context)
-        await query.message.delete()
-        return
-    
     if data == "take_order":
-        logger.info(f"Take order from {user_id}")
-        
         session = await db.get_active_session(user_id)
         if session:
-            logger.info(f"Cleaning old session for user {user_id}")
-            await db.clear_active_session(user_id)
-            await db.update_order_status(session["order_id"], "cancelled")
+            await query.answer("У вас уже есть активная заявка!", show_alert=True)
+            return
         
         order_id = await db.create_order(user_id, "", "taken")
         await db.set_active_session(user_id, order_id, "waiting_phone", {})
@@ -346,14 +521,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = await context.bot.send_message(
                 user_id,
                 "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                "<i>• формат не важен, на отправку материала у вас ровно: 60</i>",
+                f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("отмена", callback_data="cancel")]
+                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
                 ])
             )
             await db.add_order_message(order_id, msg.message_id)
-            logger.info(f"Message sent to user {user_id}")
+            asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
         except Exception as e:
             logger.error(f"Failed to send: {e}")
             await db.clear_active_session(user_id)
@@ -361,29 +536,241 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Сначала напишите /start", show_alert=True)
         return
     
-    if data == "cancel":
+    if data.startswith("cancel_"):
+        order_id = int(data.split("_")[1])
+        session = await db.get_active_session(user_id)
+        if not session or session["order_id"] != order_id:
+            return
+        
+        phone = session["data"].get("phone") if session["data"] else None
+        
+        await db.clear_active_session(user_id)
+        await db.update_order_status(order_id, "cancelled")
+        
+        if phone:
+            admin_text = (
+                f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
+                f"<i>от: {query.from_user.username or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
+                f"<i>статус: отменена</i>\n"
+                f"<i>время: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            )
+        else:
+            admin_text = (
+                f"<blockquote>🔖 заявка</blockquote>\n\n"
+                f"<i>от: {query.from_user.username or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
+                f"<i>статус: отменена</i>"
+            )
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("инфо", url=f"tg://user?id={user_id}")]
+        ])
+        
+        await context.bot.send_message(ADMIN_ID, admin_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        
+        if query.message:
+            await query.message.delete()
+        
+        await publish_new_order(context)
+        return
+    
+    if data.startswith("admin_sms_"):
+        order_id = int(data.split("_")[2])
+        order = await db.pool.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+        if not order:
+            return
+        
+        await db.set_active_session(order["user_id"], order_id, "waiting_code", {"phone": order["phone"]})
+        
+        user_msg = await context.bot.send_message(
+            order["user_id"],
+            "<blockquote>📮 запрошено SMS</blockquote>\n\n"
+            f"<i>• введите код из смс, у вас ровно: <code>60</code></i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
+            ])
+        )
+        await db.add_order_message(order_id, user_msg.message_id)
+        
+        asyncio.create_task(start_timer(context, order["user_id"], order_id, "code", 60))
+        
+        await query.message.delete()
+        return
+    
+    if data.startswith("admin_reject_"):
+        order_id = int(data.split("_")[2])
+        order = await db.pool.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+        if not order:
+            return
+        
+        await db.clear_active_session(order["user_id"])
+        await db.update_order_status(order_id, "rejected")
+        
+        user_text = (
+            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+            f"<i>статус: отменена</i>\n"
+            f"<i>причина: отклонена администрацией</i>"
+        )
+        await context.bot.send_message(
+            order["user_id"],
+            user_text,
+            parse_mode=ParseMode.HTML
+        )
+        
+        await query.message.delete()
+        await publish_new_order(context)
+        return
+    
+    if data.startswith("admin_reject_registered_"):
+        order_id = int(data.split("_")[3])
+        order = await db.pool.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+        if not order:
+            return
+        
+        await db.clear_active_session(order["user_id"])
+        await db.update_order_status(order_id, "rejected")
+        
+        user_text = (
+            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+            f"<i>статус: отменена</i>\n"
+            f"<i>причина: уже зарегистрирован</i>"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+        ])
+        await context.bot.send_message(
+            order["user_id"],
+            user_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+        
+        await query.message.delete()
+        await publish_new_order(context)
+        return
+    
+    if data.startswith("admin_error_"):
+        order_id = int(data.split("_")[2])
+        order = await db.pool.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+        if not order:
+            return
+        
+        await db.clear_active_session(order["user_id"])
+        await db.update_order_status(order_id, "error")
+        
+        user_text = (
+            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+            f"<i>статус: отменена</i>\n"
+            f"<i>причина: ошибка/невалид</i>\n"
+            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+        ])
+        await context.bot.send_message(
+            order["user_id"],
+            user_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+        
+        await query.message.delete()
+        await publish_new_order(context)
+        return
+    
+    if data.startswith("admin_confirm_"):
+        order_id = int(data.split("_")[2])
+        order = await db.pool.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+        if not order:
+            return
+        
+        await db.update_order_status(order_id, "confirmed", datetime.now(MOSCOW_TZ))
+        
+        user_text = (
+            f"<blockquote>📮 SMS заявка <code>#{order['phone']}</code></blockquote>\n\n"
+            f"<i>статус: код ожидает подтверждения</i>\n"
+            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("обновить", callback_data=f"check_status_{order_id}")]
+        ])
+        
+        order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+        if order_row and order_row["message_id"]:
+            try:
+                await context.bot.edit_message_text(
+                    user_text,
+                    order["user_id"],
+                    order_row["message_id"],
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            except:
+                pass
+        
+        await query.message.delete()
+        return
+    
+    if data.startswith("check_status_"):
+        order_id = int(data.split("_")[2])
+        order = await db.pool.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+        if not order or order["status"] != "confirmed":
+            return
+        
         session = await db.get_active_session(user_id)
         if session:
             await db.clear_active_session(user_id)
-            await db.update_order_status(session["order_id"], "cancelled")
-            await query.message.delete()
-            await query.answer("Заявка отменена")
+        
+        user_text = (
+            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+            f"<i>статус: подтверждена</i>\n"
+            f"<i>до зачисления средств: <code>10:00</code></i>\n"
+            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+        ])
+        await query.edit_message_text(
+            user_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+        
+        asyncio.create_task(start_fund_timer(context, order["user_id"], order_id, order["phone"]))
         return
     
-    if data == "retry_phone":
+    if data.startswith("retry_phone"):
         session = await db.get_active_session(user_id)
         if session and session["step"] == "waiting_phone":
             await query.message.delete()
             msg = await context.bot.send_message(
                 user_id,
                 "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                "<i>• формат не важен, на отправку материала у вас ровно: 60</i>",
+                f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("отмена", callback_data="cancel")]
+                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{session['order_id']}")]
                 ])
             )
             await db.add_order_message(session["order_id"], msg.message_id)
+            asyncio.create_task(start_timer(context, user_id, session["order_id"], "phone", 60))
+        return
+    
+    if data.startswith("retry_code"):
+        session = await db.get_active_session(user_id)
+        if session and session["step"] == "waiting_code":
+            await query.message.delete()
+            msg = await context.bot.send_message(
+                user_id,
+                "<blockquote>📮 запрошено SMS</blockquote>\n\n"
+                f"<i>• введите код из смс, у вас ровно: <code>60</code></i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{session['order_id']}")]
+                ])
+            )
+            await db.add_order_message(session["order_id"], msg.message_id)
+            asyncio.create_task(start_timer(context, user_id, session["order_id"], "code", 60))
         return
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
