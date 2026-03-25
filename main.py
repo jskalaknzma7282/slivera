@@ -168,38 +168,14 @@ def format_time(dt: datetime) -> str:
     return dt.astimezone(MOSCOW_TZ).strftime("%H:%M UTC")
 
 async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
-    bot_username = "JetSms_Robot"
     text = (
         "<blockquote>🔖 заявка создана</blockquote>\n\n"
         "<i>• для принятия заявки нажмите кнопку ниже:</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("принять заявку", url=f"https://t.me/{bot_username}?start=take_order")]
+        [InlineKeyboardButton("принять заявку", callback_data="take_order")]
     ])
     await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-
-async def process_take_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    session = await db.get_active_session(user_id)
-    if session:
-        await update.message.reply_text("У вас уже есть активная заявка!")
-        return
-    
-    order_id = await db.create_order(user_id, "", "taken")
-    await db.set_active_session(user_id, order_id, "waiting_phone", {})
-    
-    msg = await context.bot.send_message(
-        user_id,
-        "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-        f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
-        ])
-    )
-    await db.add_order_message(order_id, msg.message_id)
-    asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -207,12 +183,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await db.get_user(user_id, username)
     
-    # Обработка deep link
-    if context.args and context.args[0] == "take_order":
-        await process_take_order(update, context)
-        return
-    
-    # Обычный старт
     text = (
         "<blockquote><b>👋 Добро пожаловать в сервис JetMax!</b></blockquote>\n\n"
         f"• В данном боте обрабатываются SMS заявки, новостной канал: {CHANNEL_LINK}"
@@ -292,6 +262,12 @@ async def start_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id
     for i in range(seconds, 0, -1):
         session = await db.get_active_session(user_id)
         if not session or session["order_id"] != order_id:
+            return
+        
+        current_step = session.get("step")
+        if timer_type == "phone" and current_step != "waiting_phone":
+            return
+        if timer_type == "code" and current_step != "waiting_code":
             return
         
         text = ""
@@ -469,7 +445,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.add_order_message(order_id, admin_msg.message_id, is_admin=True)
         
         await update.message.reply_text(
-            "<blockquote>📮 номер в обработке</blockquote>\n\n"
+            f"<blockquote>📮 заявка <code>#{phone}</code> в обработке</blockquote>\n\n"
             "<i>• ожидайте запроса SMS (в среднем занимает ≈ 2м)</i>",
             parse_mode=ParseMode.HTML
         )
@@ -531,6 +507,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"Callback: {data} from {user_id}")
     await query.answer()
+    
+    if data == "take_order":
+        session = await db.get_active_session(user_id)
+        if session:
+            await query.answer("У вас уже есть активная заявка!", show_alert=True)
+            return
+        
+        order_id = await db.create_order(user_id, "", "taken")
+        await db.set_active_session(user_id, order_id, "waiting_phone", {})
+        
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+        try:
+            msg = await context.bot.send_message(
+                user_id,
+                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
+                f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
+                ])
+            )
+            await db.add_order_message(order_id, msg.message_id)
+            asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
+        except Exception as e:
+            logger.error(f"Failed to send: {e}")
+            await db.clear_active_session(user_id)
+            await db.update_order_status(order_id, "cancelled")
+            await query.answer("Сначала напишите /start", show_alert=True)
+        return
     
     if data.startswith("cancel_"):
         order_id = int(data.split("_")[1])
