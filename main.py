@@ -11,14 +11,11 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 APP_URL = os.getenv("APP_URL", "https://slivera-production.up.railway.app")
+PORT = int(os.getenv("PORT", 8080))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask для Mini App
 flask_app = Flask(__name__, static_folder='static')
 
 @flask_app.route('/')
@@ -30,35 +27,29 @@ def profile():
     return send_from_directory('static', 'index.html')
 
 def run_flask():
-    flask_app.run(host='0.0.0.0', port=8000)
+    flask_app.run(host='0.0.0.0', port=PORT)
 
-# Бот
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "<b>👋 Добро пожаловать в MaxHub!</b>\n\n"
-        "<i>Нажмите кнопку ниже, чтобы открыть профиль</i>",
+        "<i>Нажмите /profile</i>",
         parse_mode=ParseMode.HTML
     )
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "📊 Открыть профиль",
-            web_app={"url": f"{APP_URL}/profile"}
-        )
+        InlineKeyboardButton("📊 Открыть профиль", web_app={"url": f"{APP_URL}/profile"})
     ]])
     await update.message.reply_text(
         "<b>🌟 Ваш профиль MaxHub</b>\n\n"
-        "<i>Нажмите кнопку, чтобы открыть красивый профиль</i>",
+        "<i>Нажмите кнопку</i>",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
     )
 
 def main():
-    # Запускаем Flask в отдельном потоке
     threading.Thread(target=run_flask, daemon=True).start()
     
-    # Запускаем бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("profile", profile_command))
