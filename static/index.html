@@ -11,7 +11,6 @@
             padding: 0;
             box-sizing: border-box;
         }
-
         body {
             background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -22,7 +21,6 @@
             align-items: center;
             padding: 20px;
         }
-
         .card {
             background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
@@ -34,7 +32,6 @@
             border: 1px solid rgba(255, 255, 255, 0.2);
             text-align: center;
         }
-
         .avatar {
             width: 100px;
             height: 100px;
@@ -48,7 +45,6 @@
             font-weight: bold;
             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
         }
-
         .username {
             font-size: 24px;
             font-weight: 600;
@@ -58,20 +54,17 @@
             -webkit-text-fill-color: transparent;
             background-clip: text;
         }
-
         .user-id {
             font-size: 14px;
             color: rgba(255, 255, 255, 0.6);
             margin-bottom: 24px;
         }
-
         .balance-box {
             background: rgba(0, 0, 0, 0.4);
             border-radius: 24px;
             padding: 20px;
             margin: 20px 0;
         }
-
         .balance-label {
             font-size: 14px;
             text-transform: uppercase;
@@ -79,46 +72,39 @@
             color: rgba(255, 255, 255, 0.7);
             margin-bottom: 8px;
         }
-
         .balance-value {
             font-size: 48px;
             font-weight: 800;
             color: #00ffaa;
             text-shadow: 0 0 10px rgba(0, 255, 170, 0.3);
         }
-
         .balance-currency {
             font-size: 20px;
             font-weight: 500;
             color: rgba(255, 255, 255, 0.8);
         }
-
         .stats {
             display: flex;
             justify-content: space-between;
             margin: 20px 0;
             gap: 12px;
         }
-
         .stat {
             flex: 1;
             background: rgba(255, 255, 255, 0.05);
             border-radius: 20px;
             padding: 12px;
         }
-
         .stat-value {
             font-size: 20px;
             font-weight: 700;
             color: #fff;
         }
-
         .stat-label {
             font-size: 11px;
             color: rgba(255, 255, 255, 0.6);
             margin-top: 4px;
         }
-
         .button {
             background: linear-gradient(135deg, #00c6fb, #005bea);
             border: none;
@@ -132,25 +118,21 @@
             margin-top: 16px;
             transition: transform 0.2s, opacity 0.2s;
         }
-
         .button:active {
             transform: scale(0.97);
             opacity: 0.8;
         }
-
         .footer {
             font-size: 12px;
             color: rgba(255, 255, 255, 0.4);
             margin-top: 24px;
             letter-spacing: 0.5px;
         }
-
         @keyframes pulse {
             0% { opacity: 0.6; }
             50% { opacity: 1; }
             100% { opacity: 0.6; }
         }
-
         .pulse {
             animation: pulse 1.5s infinite;
         }
@@ -161,63 +143,50 @@
         <div class="avatar" id="avatar">👤</div>
         <div class="username" id="username">Загрузка...</div>
         <div class="user-id" id="userId">ID: --</div>
-        
         <div class="balance-box">
             <div class="balance-label">BALANCE</div>
-            <div class="balance-value" id="balance">
-                <span class="pulse">--.--</span>
-            </div>
+            <div class="balance-value" id="balance"><span class="pulse">--.--</span></div>
             <div class="balance-currency">USDT</div>
         </div>
-
         <div class="stats">
-            <div class="stat">
-                <div class="stat-value" id="totalOrders">0</div>
-                <div class="stat-label">Всего заявок</div>
-            </div>
-            <div class="stat">
-                <div class="stat-value" id="todayOrders">0</div>
-                <div class="stat-label">Сегодня</div>
-            </div>
-            <div class="stat">
-                <div class="stat-value" id="rank">🏆</div>
-                <div class="stat-label">Ранг</div>
-            </div>
+            <div class="stat"><div class="stat-value" id="totalOrders">0</div><div class="stat-label">Всего заявок</div></div>
+            <div class="stat"><div class="stat-value" id="todayOrders">0</div><div class="stat-label">Сегодня</div></div>
+            <div class="stat"><div class="stat-value" id="rank">🏆</div><div class="stat-label">Ранг</div></div>
         </div>
-
         <button class="button" onclick="closeApp()">Закрыть</button>
-        <div class="footer">
-            By Jonathan ✨
-        </div>
+        <div class="footer">By Jonathan ✨</div>
     </div>
-
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
         tg.ready();
-
         const user = tg.initDataUnsafe.user;
         const userId = user?.id;
         const username = user?.username || user?.first_name || 'User';
-        
         document.getElementById('username').innerHTML = '@' + username;
         document.getElementById('userId').innerHTML = 'ID: ' + (userId || '---');
-        
         const avatarLetter = (username.charAt(0) || 'U').toUpperCase();
         document.getElementById('avatar').innerHTML = avatarLetter;
         
-        // Пример статичных данных (можно заменить на API)
-        setTimeout(() => {
-            document.getElementById('balance').innerHTML = '124.50';
-            document.getElementById('balance').classList.remove('pulse');
-            document.getElementById('totalOrders').innerHTML = '42';
-            document.getElementById('todayOrders').innerHTML = '3';
-            document.getElementById('rank').innerHTML = '⭐ Профи';
-        }, 1000);
-        
-        function closeApp() {
-            tg.close();
+        async function loadData() {
+            if (!userId) return;
+            try {
+                const response = await fetch(`/api/profile?user_id=${userId}`);
+                const data = await response.json();
+                if (data.balance !== undefined) {
+                    document.getElementById('balance').innerHTML = data.balance.toFixed(2);
+                    document.getElementById('balance').classList.remove('pulse');
+                }
+                if (data.total_orders !== undefined) document.getElementById('totalOrders').innerHTML = data.total_orders;
+                if (data.today_orders !== undefined) document.getElementById('todayOrders').innerHTML = data.today_orders;
+                if (data.rank) document.getElementById('rank').innerHTML = data.rank;
+            } catch (error) {
+                document.getElementById('balance').innerHTML = '0.00';
+                document.getElementById('balance').classList.remove('pulse');
+            }
         }
+        function closeApp() { tg.close(); }
+        loadData();
     </script>
 </body>
 </html>
