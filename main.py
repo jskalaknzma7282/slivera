@@ -246,7 +246,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await db.update_order_status(order_id, "taken", user_id=user_id)
                     await db.set_active_session(user_id, order_id, "waiting_phone", {})
                     
-                    # Удаляем сообщение из канала
                     channel_msg = await db.pool.fetchrow("SELECT channel_message_id FROM orders WHERE id = $1", order_id)
                     if channel_msg and channel_msg["channel_message_id"]:
                         try:
@@ -257,14 +256,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg = await context.bot.send_message(
                         user_id,
                         "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                        f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
+                        "<i>• формат не важен, на отправку материала у вас 60 секунд</i>",
                         parse_mode=ParseMode.HTML,
                         reply_markup=InlineKeyboardMarkup([
                             [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
                         ])
                     )
                     await db.add_order_message(order_id, msg.message_id)
-                    asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
+                    asyncio.create_task(start_phone_timer(context, user_id, order_id, 60))
                     return
     
     text = (
@@ -500,50 +499,47 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filename=f"report_{now.strftime('%Y%m%d')}.txt"
         )
 
-async def start_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id: int, timer_type: str, seconds: int):
-    for i in range(seconds, 0, -1):
-        session = await db.get_active_session(user_id)
-        if not session or session["order_id"] != order_id:
-            return
-        
-        current_step = session.get("step")
-        if timer_type == "phone" and current_step != "waiting_phone":
-            return
-        if timer_type == "code" and current_step != "waiting_code":
-            return
-        
-        text = ""
-        if timer_type == "phone":
-            text = (
-                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                f"<i>• формат не важен, на отправку материала у вас ровно: <code>{i}</code></i>"
-            )
-        else:
-            text = (
-                "<blockquote>📮 запрошено SMS</blockquote>\n\n"
-                f"<i>• введите код из смс, у вас ровно: <code>{i}</code></i>"
-            )
-        
-        order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
-        if order and order["message_id"]:
-            try:
-                await context.bot.edit_message_text(
-                    text, user_id, order["message_id"],
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
-                    ])
-                )
-            except:
-                pass
-        
-        await asyncio.sleep(1)
+async def start_phone_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id: int, seconds: int):
+    await asyncio.sleep(seconds)
     
     session = await db.get_active_session(user_id)
-    if not session or session["order_id"] != order_id:
+    if not session or session["order_id"] != order_id or session["step"] != "waiting_phone":
         return
     
     await db.clear_active_session(user_id)
+    await db.update_order_status(order_id, "cancelled")
+    
+    user_text = (
+        f"<blockquote>📌 заявка</blockquote>\n\n"
+        f"<i>статус: время вышло</i>\n"
+        f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+    ])
+    
+    order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+    if order and order["message_id"]:
+        try:
+            await context.bot.edit_message_text(
+                user_text, user_id, order["message_id"],
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+        except:
+            pass
+    
+    await publish_new_order(context)
+
+async def start_code_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id: int, seconds: int):
+    await asyncio.sleep(seconds)
+    
+    session = await db.get_active_session(user_id)
+    if not session or session["order_id"] != order_id or session["step"] != "waiting_code":
+        return
+    
+    await db.clear_active_session(user_id)
+    await db.update_order_status(order_id, "cancelled")
     
     phone = session["data"].get("phone") if session["data"] else None
     
@@ -586,66 +582,66 @@ async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, ord
     if confirmed_at.tzinfo is None:
         confirmed_at = confirmed_at.replace(tzinfo=UTC_TZ)
     
-    now = datetime.now(UTC_TZ)
-    elapsed = (now - confirmed_at).total_seconds()
-    remaining = max(0, 600 - elapsed)
+    last_minute = -1
     
-    if remaining <= 0:
-        await db.update_balance(user_id, 4.0)
-        await db.update_order_status(order_id, "funded")
-        return
-    
-    for i in range(int(remaining), 0, -1):
-        minutes = i // 60
-        seconds = i % 60
-        timer_text = f"{minutes:02d}:{seconds:02d}"
+    while True:
+        now = datetime.now(UTC_TZ)
+        elapsed = (now - confirmed_at).total_seconds()
+        remaining = max(0, 600 - elapsed)
+        
+        if remaining <= 0:
+            await db.update_balance(user_id, 4.0)
+            await db.update_order_status(order_id, "funded")
+            
+            user_text = (
+                f"<blockquote>🎉 денюжки</blockquote>\n\n"
+                f"<i>ваш счет пополнен: + <code>4.00</code> USDT</i>"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+            ])
+            order_msg = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+            if order_msg and order_msg["message_id"]:
+                try:
+                    await context.bot.edit_message_text(
+                        user_text, user_id, order_msg["message_id"],
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=keyboard
+                    )
+                except:
+                    pass
+            break
+        
+        minutes = int(remaining // 60)
+        
+        if minutes != last_minute:
+            last_minute = minutes
+            timer_text = f"{minutes:02d} мин"
+            
+            order_msg = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+            if order_msg and order_msg["message_id"]:
+                text = (
+                    f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
+                    f"<i>статус: подтверждена</i>\n"
+                    f"<i>до зачисления средств: <code>{timer_text}</code></i>\n"
+                    f"<i>дата: <code>{format_time(confirmed_at)}</code></i>"
+                )
+                try:
+                    await context.bot.edit_message_text(
+                        text, user_id, order_msg["message_id"],
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+                        ])
+                    )
+                except:
+                    pass
         
         order_check = await db.pool.fetchrow("SELECT status FROM orders WHERE id = $1", order_id)
         if order_check["status"] != "confirmed":
-            return
+            break
         
-        order_msg = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
-        if order_msg and order_msg["message_id"]:
-            text = (
-                f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
-                f"<i>статус: подтверждена</i>\n"
-                f"<i>до зачисления средств: <code>{timer_text}</code></i>\n"
-                f"<i>дата: <code>{format_time(confirmed_at)}</code></i>"
-            )
-            try:
-                await context.bot.edit_message_text(
-                    text, user_id, order_msg["message_id"],
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
-                    ])
-                )
-            except:
-                pass
-        
-        await asyncio.sleep(1)
-    
-    await db.update_balance(user_id, 4.0)
-    await db.update_order_status(order_id, "funded")
-    
-    user_text = (
-        f"<blockquote>🎉 денюжки</blockquote>\n\n"
-        f"<i>ваш счет пополнен: + <code>4.00</code> USDT</i>"
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
-    ])
-    
-    order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
-    if order and order["message_id"]:
-        try:
-            await context.bot.edit_message_text(
-                user_text, user_id, order["message_id"],
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-        except:
-            pass
+        await asyncio.sleep(60)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -812,14 +808,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = await context.bot.send_message(
                 user_id,
                 "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
+                "<i>• формат не важен, на отправку материала у вас 60 секунд</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
                 ])
             )
             await db.add_order_message(order_id, msg.message_id)
-            asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
+            asyncio.create_task(start_phone_timer(context, user_id, order_id, 60))
         except Exception as e:
             logger.error(f"Failed to send: {e}")
             await db.clear_active_session(user_id)
@@ -884,7 +880,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_msg = await context.bot.send_message(
             order["user_id"],
             "<blockquote>📮 запрошено SMS</blockquote>\n\n"
-            f"<i>• введите код из смс, у вас ровно: <code>60</code></i>",
+            "<i>• введите код из смс, у вас 60 секунд</i>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
@@ -892,7 +888,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await db.add_order_message(order_id, user_msg.message_id)
         
-        asyncio.create_task(start_timer(context, order["user_id"], order_id, "code", 60))
+        asyncio.create_task(start_code_timer(context, order["user_id"], order_id, 60))
         
         await query.message.delete()
         return
@@ -1063,7 +1059,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = datetime.now(UTC_TZ)
         elapsed = (now - confirmed_at).total_seconds()
         remaining = max(0, 600 - elapsed)
-        timer_text = f"{int(remaining // 60):02d}:{int(remaining % 60):02d}"
+        minutes = int(remaining // 60)
+        timer_text = f"{minutes:02d} мин"
         
         user_text = (
             f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
@@ -1094,14 +1091,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = await context.bot.send_message(
                 user_id,
                 "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
+                "<i>• формат не важен, на отправку материала у вас 60 секунд</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("отмена", callback_data=f"cancel_{session['order_id']}")]
                 ])
             )
             await db.add_order_message(session["order_id"], msg.message_id)
-            asyncio.create_task(start_timer(context, user_id, session["order_id"], "phone", 60))
+            asyncio.create_task(start_phone_timer(context, user_id, session["order_id"], 60))
         return
     
     if data.startswith("retry_code"):
@@ -1111,14 +1108,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = await context.bot.send_message(
                 user_id,
                 "<blockquote>📮 запрошено SMS</blockquote>\n\n"
-                f"<i>• введите код из смс, у вас ровно: <code>60</code></i>",
+                "<i>• введите код из смс, у вас 60 секунд</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("отмена", callback_data=f"cancel_{session['order_id']}")]
                 ])
             )
             await db.add_order_message(session["order_id"], msg.message_id)
-            asyncio.create_task(start_timer(context, user_id, session["order_id"], "code", 60))
+            asyncio.create_task(start_code_timer(context, user_id, session["order_id"], 60))
         return
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
