@@ -170,7 +170,7 @@ def format_time(dt: datetime) -> str:
 async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
     text = (
         "<blockquote>🔖 заявка создана</blockquote>\n\n"
-        "<i>• для принятия заявки нажмите кнопку ниже:</i>"
+        "<i>• для принятия заявки нажмите кнопку ниже, затем откройте чат с ботом</i>"
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("принять заявку", callback_data="take_order")]
@@ -584,7 +584,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not order:
             return
         
-        # Удаляем старое сообщение пользователя
         old_msg_id = order["message_id"]
         if old_msg_id:
             try:
@@ -619,16 +618,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.clear_active_session(order["user_id"])
         await db.update_order_status(order_id, "rejected")
         
-        user_text = (
-            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-            f"<i>статус: отменена</i>\n"
-            f"<i>причина: отклонена администрацией</i>"
-        )
-        await context.bot.send_message(
-            order["user_id"],
-            user_text,
-            parse_mode=ParseMode.HTML
-        )
+        order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+        if order_row and order_row["message_id"]:
+            user_text = (
+                f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+                f"<i>статус: отменена</i>\n"
+                f"<i>причина: отклонена администрацией</i>"
+            )
+            try:
+                await context.bot.edit_message_text(
+                    user_text,
+                    order["user_id"],
+                    order_row["message_id"],
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
         
         await query.message.delete()
         await publish_new_order(context)
@@ -643,20 +648,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.clear_active_session(order["user_id"])
         await db.update_order_status(order_id, "rejected")
         
-        user_text = (
-            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-            f"<i>статус: отменена</i>\n"
-            f"<i>причина: уже зарегистрирован</i>"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
-        ])
-        await context.bot.send_message(
-            order["user_id"],
-            user_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
-        )
+        order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+        if order_row and order_row["message_id"]:
+            user_text = (
+                f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+                f"<i>статус: отменена</i>\n"
+                f"<i>причина: уже зарегистрирован</i>"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+            ])
+            try:
+                await context.bot.edit_message_text(
+                    user_text,
+                    order["user_id"],
+                    order_row["message_id"],
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            except:
+                pass
         
         await query.message.delete()
         await publish_new_order(context)
@@ -671,21 +682,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.clear_active_session(order["user_id"])
         await db.update_order_status(order_id, "error")
         
-        user_text = (
-            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-            f"<i>статус: отменена</i>\n"
-            f"<i>причина: ошибка/невалид</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
-        ])
-        await context.bot.send_message(
-            order["user_id"],
-            user_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard
-        )
+        order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+        if order_row and order_row["message_id"]:
+            user_text = (
+                f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
+                f"<i>статус: отменена</i>\n"
+                f"<i>причина: ошибка/невалид</i>\n"
+                f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+            ])
+            try:
+                await context.bot.edit_message_text(
+                    user_text,
+                    order["user_id"],
+                    order_row["message_id"],
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            except:
+                pass
         
         await query.message.delete()
         await publish_new_order(context)
