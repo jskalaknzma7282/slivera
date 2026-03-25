@@ -63,7 +63,8 @@ class Database:
                     created_at TIMESTAMP DEFAULT NOW(),
                     confirmed_at TIMESTAMP,
                     message_id BIGINT,
-                    admin_message_id BIGINT
+                    admin_message_id BIGINT,
+                    channel_message_id BIGINT
                 )
             """)
             await conn.execute("""
@@ -109,18 +110,30 @@ class Database:
                 phone, order_id
             )
 
-    async def update_order_status(self, order_id: int, status: str, confirmed_at: datetime = None):
+    async def update_order_status(self, order_id: int, status: str, user_id: int = None, confirmed_at: datetime = None):
         async with self.pool.acquire() as conn:
             if confirmed_at:
                 await conn.execute(
                     "UPDATE orders SET status = $1, confirmed_at = $2 WHERE id = $3",
                     status, confirmed_at.replace(tzinfo=None), order_id
                 )
+            elif user_id:
+                await conn.execute(
+                    "UPDATE orders SET status = $1, user_id = $2 WHERE id = $3",
+                    status, user_id, order_id
+                )
             else:
                 await conn.execute(
                     "UPDATE orders SET status = $1 WHERE id = $2",
                     status, order_id
                 )
+
+    async def get_order_by_channel_message(self, channel_message_id: int):
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT * FROM orders WHERE channel_message_id = $1",
+                channel_message_id
+            )
 
     async def get_active_session(self, user_id: int):
         async with self.pool.acquire() as conn:
@@ -161,6 +174,13 @@ class Database:
                     message_id, order_id
                 )
     
+    async def add_channel_message(self, order_id: int, channel_message_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE orders SET channel_message_id = $1 WHERE id = $2",
+                channel_message_id, order_id
+            )
+    
     async def clear_all_sessions(self):
         async with self.pool.acquire() as conn:
             await conn.execute("DELETE FROM active_sessions")
@@ -197,14 +217,18 @@ def format_time(dt: datetime) -> str:
     return dt.astimezone(MOSCOW_TZ).strftime("%H:%M UTC")
 
 async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
+    # Создаем заявку со статусом pending
+    order_id = await db.create_order(0, "", "pending")
+    
     text = (
         "<blockquote>🔖 заявка создана</blockquote>\n\n"
         "<i>• для принятия заявки нажмите кнопку ниже, затем откройте чат с ботом</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("принять заявку", callback_data="take_order")]
+        [InlineKeyboardButton("принять заявку", callback_data=f"take_order_{order_id}")]
     ])
-    await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    msg = await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    await db.add_channel_message(order_id, msg.message_id)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -723,22 +747,42 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     logger.info(f"Callback: {data} from {user_id}")
-    await query.answer()
     
-    if data == "take_order":
-        session = await db.get_active_session(user_id)
-        if session:
-            await query.answer("У вас уже есть активная заявка!", show_alert=True)
+    # Защита от двойного нажатия
+    if data.startswith("take_order_"):
+        order_id = int(data.split("_")[2])
+        
+        # Проверяем, не занята ли заявка
+        order = await db.pool.fetchrow("SELECT user_id, status FROM orders WHERE id = $1", order_id)
+        if not order:
+            await query.answer("Заявка не найдена", show_alert=True)
             return
         
-        order_id = await db.create_order(user_id, "", "taken")
+        if order["user_id"] != 0 and order["user_id"] is not None:
+            await query.answer("Заявка уже занята другим пользователем!", show_alert=True)
+            return
+        
+        if order["status"] != "pending":
+            await query.answer("Заявка уже обработана", show_alert=True)
+            return
+        
+        # Проверяем, нет ли у пользователя активной сессии
+        session = await db.get_active_session(user_id)
+        if session:
+            await query.answer("У вас уже есть активная заявка! Завершите её сначала.", show_alert=True)
+            return
+        
+        # Закрепляем заявку за пользователем
+        await db.update_order_status(order_id, "taken", user_id)
         await db.set_active_session(user_id, order_id, "waiting_phone", {})
         
+        # Удаляем сообщение из канала
         try:
             await query.message.delete()
         except:
             pass
         
+        # Отправляем запрос номера
         try:
             msg = await context.bot.send_message(
                 user_id,
@@ -755,8 +799,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Failed to send: {e}")
             await db.clear_active_session(user_id)
             await db.update_order_status(order_id, "cancelled")
-            await query.answer("Сначала напишите /start", show_alert=True)
+            await query.answer("Сначала напишите /start в личку бота!", show_alert=True)
         return
+    
+    await query.answer()
     
     if data.startswith("cancel_"):
         order_id = int(data.split("_")[1])
@@ -948,7 +994,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         confirmed_at = datetime.now(UTC_TZ)
-        await db.update_order_status(order_id, "confirmed", confirmed_at)
+        await db.update_order_status(order_id, "confirmed", confirmed_at=confirmed_at)
         
         user_text = (
             f"<blockquote>📮 SMS заявка <code>#{order['phone']}</code></blockquote>\n\n"
