@@ -7,7 +7,10 @@ from datetime import datetime
 from typing import Optional
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
+)
 from telegram.constants import ParseMode
 from dotenv import load_dotenv
 import asyncpg
@@ -328,7 +331,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "take_order":
         logger.info(f"Take order from {user_id}")
         
-        # Очищаем старую сессию если есть
         session = await db.get_active_session(user_id)
         if session:
             logger.info(f"Cleaning old session for user {user_id}")
@@ -366,6 +368,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await db.update_order_status(session["order_id"], "cancelled")
             await query.message.delete()
             await query.answer("Заявка отменена")
+        return
+    
+    if data == "retry_phone":
+        session = await db.get_active_session(user_id)
+        if session and session["step"] == "waiting_phone":
+            await query.message.delete()
+            msg = await context.bot.send_message(
+                user_id,
+                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
+                "<i>• формат не важен, на отправку материала у вас ровно: 60</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("отмена", callback_data="cancel")]
+                ])
+            )
+            await db.add_order_message(session["order_id"], msg.message_id)
         return
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
