@@ -174,12 +174,32 @@ async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
         "<i>• для принятия заявки нажмите кнопку ниже:</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("принять заявку", callback_data="take_order"),
-            InlineKeyboardButton("💬 открыть чат", url=f"https://t.me/{bot_username}")
-        ]
+        [InlineKeyboardButton("принять заявку", url=f"https://t.me/{bot_username}?start=take_order")]
     ])
     await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+async def process_take_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    session = await db.get_active_session(user_id)
+    if session:
+        await update.message.reply_text("У вас уже есть активная заявка!")
+        return
+    
+    order_id = await db.create_order(user_id, "", "taken")
+    await db.set_active_session(user_id, order_id, "waiting_phone", {})
+    
+    msg = await context.bot.send_message(
+        user_id,
+        "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
+        f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
+        ])
+    )
+    await db.add_order_message(order_id, msg.message_id)
+    asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -187,6 +207,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await db.get_user(user_id, username)
     
+    # Обработка deep link
+    if context.args and context.args[0] == "take_order":
+        await process_take_order(update, context)
+        return
+    
+    # Обычный старт
     text = (
         "<blockquote><b>👋 Добро пожаловать в сервис JetMax!</b></blockquote>\n\n"
         f"• В данном боте обрабатываются SMS заявки, новостной канал: {CHANNEL_LINK}"
@@ -506,36 +532,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Callback: {data} from {user_id}")
     await query.answer()
     
-    if data == "take_order":
-        session = await db.get_active_session(user_id)
-        if session:
-            await query.answer("У вас уже есть активная заявка!", show_alert=True)
-            return
-        
-        order_id = await db.create_order(user_id, "", "taken")
-        await db.set_active_session(user_id, order_id, "waiting_phone", {})
-        
-        await query.message.delete()
-        
-        try:
-            msg = await context.bot.send_message(
-                user_id,
-                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
-                ])
-            )
-            await db.add_order_message(order_id, msg.message_id)
-            asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
-        except Exception as e:
-            logger.error(f"Failed to send: {e}")
-            await db.clear_active_session(user_id)
-            await db.update_order_status(order_id, "cancelled")
-            await query.answer("Сначала напишите /start", show_alert=True)
-        return
-    
     if data.startswith("cancel_"):
         order_id = int(data.split("_")[1])
         session = await db.get_active_session(user_id)
@@ -578,6 +574,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order = await db.pool.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
         if not order:
             return
+        
+        # Удаляем старое сообщение пользователя
+        old_msg_id = order["message_id"]
+        if old_msg_id:
+            try:
+                await context.bot.delete_message(order["user_id"], old_msg_id)
+            except:
+                pass
         
         await db.set_active_session(order["user_id"], order_id, "waiting_code", {"phone": order["phone"]})
         
