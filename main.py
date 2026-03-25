@@ -10,6 +10,7 @@ from flask import Flask, send_from_directory
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
+APP_URL = os.getenv("APP_URL", "https://slivera-production.up.railway.app")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,11 +41,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    bot_username = (await context.bot.get_me()).username
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(
             "📊 Открыть профиль",
-            web_app={"url": f"https://{bot_username}.railway.app/profile"}
+            web_app={"url": f"{APP_URL}/profile"}
         )
     ]])
     await update.message.reply_text(
