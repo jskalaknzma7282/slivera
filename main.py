@@ -618,7 +618,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.clear_active_session(order["user_id"])
         await db.update_order_status(order_id, "rejected")
         
-        # Отправляем сообщение пользователю
         user_text = (
             f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
             f"<i>статус: отменена</i>\n"
@@ -630,7 +629,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         
-        # Удаляем старое сообщение пользователя
         old_msg_id = order["message_id"]
         if old_msg_id:
             try:
@@ -651,7 +649,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.clear_active_session(order["user_id"])
         await db.update_order_status(order_id, "rejected")
         
-        # Редактируем сообщение пользователя
         order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
         if order_row and order_row["message_id"]:
             user_text = (
