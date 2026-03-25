@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import asyncio
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
@@ -123,14 +124,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
     
-    await db.get_user(user_id, username)
+    user = await db.get_user(user_id, username)
     
     await update.message.reply_text(
         "<b>🎲 MaxHub Black Jack</b>\n\n"
+        f"<i>Ваш баланс: <code>{user['balance']:.2f}</code> USDT</i>\n\n"
         "<i>Доступные команды:</i>\n"
         "<code>/blackjack</code> - Играть\n"
         "<code>/bal</code> - Баланс\n"
-        "<code>/addmoney 100</code> - Пополнить (админ)",
+        "<code>/addmoney user_id сумма</code> - Пополнить (админ)",
         parse_mode=ParseMode.HTML
     )
 
