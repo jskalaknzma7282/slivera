@@ -369,9 +369,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     
+    logger.info(f"Callback received: {data} from user {user_id}")
+    
     await query.answer()
     
     if data == "take_order":
+        logger.info("Processing take_order")
         session = await db.get_active_session(user_id)
         if session:
             await query.answer("У вас уже есть активная заявка!", show_alert=True)
@@ -382,21 +385,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         try:
             await query.message.delete()
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to delete message: {e}")
         
-        msg = await context.bot.send_message(
-            user_id,
-            "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-            f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
-            ])
-        )
-        await db.add_order_message(order_id, msg.message_id)
-        
-        asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
+        try:
+            msg = await context.bot.send_message(
+                user_id,
+                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
+                f"<i>• формат не важен, на отправку материала у вас ровно: <code>60</code></i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
+                ])
+            )
+            await db.add_order_message(order_id, msg.message_id)
+            asyncio.create_task(start_timer(context, user_id, order_id, "phone", 60))
+        except Exception as e:
+            logger.error(f"Failed to send message to user {user_id}: {e}")
+            await query.answer("Сначала напишите /start в личку бота!", show_alert=True)
+            await db.clear_active_session(user_id)
+            await db.update_order_status(order_id, "cancelled")
         return
     
     if data.startswith("cancel_"):
@@ -755,6 +763,9 @@ async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, ord
         except:
             pass
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Error: {context.error}")
+
 def main():
     app = Application.builder().token(TOKEN).build()
     
@@ -762,6 +773,7 @@ def main():
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_error_handler(error_handler)
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
