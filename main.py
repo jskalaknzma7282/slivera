@@ -57,7 +57,7 @@ class Database:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS orders (
                     id SERIAL PRIMARY KEY,
-                    user_id BIGINT REFERENCES users(user_id),
+                    user_id BIGINT,
                     phone TEXT,
                     status TEXT,
                     created_at TIMESTAMP DEFAULT NOW(),
@@ -76,6 +76,7 @@ class Database:
                     started_at TIMESTAMP DEFAULT NOW()
                 )
             """)
+            logger.info("All tables created/verified")
 
     async def get_user(self, user_id: int, username: str = None):
         async with self.pool.acquire() as conn:
@@ -95,7 +96,7 @@ class Database:
                 amount, user_id
             )
 
-    async def create_order(self, user_id: int, phone: str = "", status: str = "pending") -> int:
+    async def create_order(self, user_id: int = 0, phone: str = "", status: str = "pending") -> int:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO orders (user_id, phone, status) VALUES ($1, $2, $3) RETURNING id",
