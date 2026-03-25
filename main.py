@@ -1,8 +1,8 @@
+# main.py
 import os
 import logging
 import threading
 import asyncio
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
@@ -73,11 +73,15 @@ flask_app = Flask(__name__, static_folder='static')
 
 @flask_app.route('/')
 def index():
-    return send_from_directory('static', 'blackjack.html')
+    return send_from_directory('static', 'index.html')
 
 @flask_app.route('/blackjack')
 def blackjack():
     return send_from_directory('static', 'blackjack.html')
+
+@flask_app.route('/slots')
+def slots():
+    return send_from_directory('static', 'slots.html')
 
 @flask_app.route('/api/balance')
 def api_balance():
@@ -126,14 +130,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user = await db.get_user(user_id, username)
     
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎮 Игры", web_app={"url": f"{APP_URL}/"})
+    ]])
+    
     await update.message.reply_text(
-        "<b>🎲 MaxHub Black Jack</b>\n\n"
+        f"<b>🎲 MaxHub Casino</b>\n\n"
         f"<i>Ваш баланс: <code>{user['balance']:.2f}</code> USDT</i>\n\n"
-        "<i>Доступные команды:</i>\n"
-        "<code>/blackjack</code> - Играть\n"
+        "<i>Доступные игры:</i>\n"
+        "🎰 MaxBandito Слот\n"
+        "🎲 Black Jack\n\n"
+        "<i>Команды:</i>\n"
         "<code>/bal</code> - Баланс\n"
         "<code>/addmoney user_id сумма</code> - Пополнить (админ)",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
     )
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,12 +198,23 @@ async def addmoney_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def blackjack_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎰 Играть в Black Jack", web_app={"url": f"{APP_URL}/blackjack"})
+        InlineKeyboardButton("🎲 Black Jack", web_app={"url": f"{APP_URL}/blackjack"})
     ]])
     await update.message.reply_text(
         "<b>🎲 Black Jack (21)</b>\n\n"
-        "<i>Сделайте ставку и попробуйте обыграть дилера!</i>\n"
-        "💰 Баланс: /bal",
+        "<i>Сделайте ставку и попробуйте обыграть дилера!</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
+
+async def slots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎰 MaxBandito Слот", web_app={"url": f"{APP_URL}/slots"})
+    ]])
+    await update.message.reply_text(
+        "<b>🎰 MaxBandito Слот</b>\n\n"
+        "<i>Крути барабаны и лови выигрыши!</i>\n"
+        "💀 Бандито x100 - главный джекпот!",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
     )
@@ -206,11 +228,12 @@ def main():
     
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("blackjack", blackjack_command))
     app.add_handler(CommandHandler("bal", balance_command))
     app.add_handler(CommandHandler("addmoney", addmoney_command))
+    app.add_handler(CommandHandler("blackjack", blackjack_command))
+    app.add_handler(CommandHandler("slots", slots_command))
     
-    logger.info("BlackJack бот запущен")
+    logger.info("MaxHub Casino запущен")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
