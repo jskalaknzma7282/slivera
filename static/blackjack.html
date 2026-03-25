@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <title>Black Jack | MaxHub</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+        body {
+            background: linear-gradient(135deg, #0a2f2a 0%, #1a4a3a 100%);
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 16px;
+        }
+        .game-container {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px);
+            border-radius: 32px;
+            padding: 20px;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,215,0,0.3);
+        }
+        .balance {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 18px;
+            color: gold;
+            font-weight: bold;
+        }
+        .balance span { font-size: 28px; color: #ffd700; }
+        .cards {
+            background: rgba(0,0,0,0.3);
+            border-radius: 20px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .cards-title { color: #ccc; font-size: 14px; margin-bottom: 10px; }
+        .card {
+            display: inline-block;
+            background: white;
+            color: black;
+            padding: 12px 18px;
+            margin: 5px;
+            border-radius: 12px;
+            font-size: 24px;
+            font-weight: bold;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transition: all 0.2s ease;
+        }
+        .card.red { color: red; }
+        .score { margin-top: 12px; font-size: 20px; font-weight: bold; color: #ffd700; }
+        .buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+        }
+        button {
+            flex: 1;
+            padding: 14px;
+            font-size: 18px;
+            font-weight: bold;
+            border: none;
+            border-radius: 40px;
+            background: linear-gradient(135deg, #ffd700, #b8860b);
+            color: #1a2a1a;
+            cursor: pointer;
+            transition: transform 0.1s, opacity 0.2s;
+        }
+        button:active { transform: scale(0.97); }
+        button:disabled { opacity: 0.5; transform: none; cursor: not-allowed; }
+        .message {
+            text-align: center;
+            margin-top: 15px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #ffaa66;
+            animation: fadeIn 0.3s ease;
+        }
+        .bet-input {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .bet-input input {
+            flex: 2;
+            padding: 12px;
+            border-radius: 30px;
+            border: none;
+            font-size: 16px;
+            text-align: center;
+            background: rgba(255,255,255,0.9);
+        }
+        .bet-input button { flex: 1; margin: 0; }
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 11px;
+            color: rgba(255,255,255,0.4);
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes cardFlip {
+            from { transform: rotateY(90deg); opacity: 0; }
+            to { transform: rotateY(0); opacity: 1; }
+        }
+        .card {
+            animation: cardFlip 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+<div class="game-container">
+    <div class="balance">💰 БАЛАНС: <span id="balance">0</span> USDT</div>
+    <div class="bet-input" id="betSection">
+        <input type="number" id="betAmount" placeholder="Ставка" value="1" step="0.5" min="0.5">
+        <button id="startBtn">🎲 ИГРАТЬ</button>
+    </div>
+    <div id="gameArea" style="display: none;">
+        <div class="cards">
+            <div class="cards-title">🎴 ВАШИ КАРТЫ</div>
+            <div id="playerCards"></div>
+            <div class="score" id="playerScore">Очки: 0</div>
+        </div>
+        <div class="cards">
+            <div class="cards-title">🤖 КАРТЫ ДИЛЕРА</div>
+            <div id="dealerCards"></div>
+            <div class="score" id="dealerScore">Очки: ?</div>
+        </div>
+        <div class="buttons">
+            <button id="hitBtn">➕ ЕЩЁ</button>
+            <button id="standBtn">✋ ХВАТИТ</button>
+        </div>
+        <div id="gameMessage" class="message"></div>
+    </div>
+    <div class="footer">By Jonathan ✨</div>
+</div>
+
+<script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+    tg.ready();
+    
+    let userId = tg.initDataUnsafe.user?.id;
+    let balance = 0;
+    let currentBet = 0;
+    let playerCards = [];
+    let dealerCards = [];
+    let gameActive = false;
+    
+    async function loadBalance() {
+        if (!userId) return;
+        try {
+            let res = await fetch(`/api/balance?user_id=${userId}`);
+            let data = await res.json();
+            balance = data.balance;
+            document.getElementById('balance').innerText = balance.toFixed(2);
+        } catch(e) { console.log(e); }
+    }
+    
+    async function updateBalance(newBalance) {
+        if (!userId) return;
+        try {
+            await fetch('/api/update_balance', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: userId, balance: newBalance})
+            });
+            balance = newBalance;
+            document.getElementById('balance').innerText = balance.toFixed(2);
+        } catch(e) { console.log(e); }
+    }
+    
+    function getCardValue(card) {
+        let val = card.value;
+        if (val === 'J' || val === 'Q' || val === 'K') return 10;
+        if (val === 'A') return 11;
+        return parseInt(val);
+    }
+    
+    function calculateScore(cards) {
+        let score = 0;
+        let aces = 0;
+        for (let card of cards) {
+            let val = getCardValue(card);
+            if (val === 11) aces++;
+            score += val;
+        }
+        while (score > 21 && aces > 0) {
+            score -= 10;
+            aces--;
+        }
+        return score;
+    }
+    
+    function getRandomCard() {
+        let values = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+        let suits = ['♥','♦','♣','♠'];
+        let value = values[Math.floor(Math.random() * values.length)];
+        let suit = suits[Math.floor(Math.random() * suits.length)];
+        let isRed = suit === '♥' || suit === '♦';
+        return { value, suit, isRed, display: `${value}${suit}` };
+    }
+    
+    function renderCards() {
+        let playerDiv = document.getElementById('playerCards');
+        playerDiv.innerHTML = playerCards.map(c => `<div class="card ${c.isRed ? 'red' : ''}">${c.display}</div>`).join('');
+        document.getElementById('playerScore').innerText = `Очки: ${calculateScore(playerCards)}`;
+        
+        let dealerDiv = document.getElementById('dealerCards');
+        if (gameActive) {
+            dealerDiv.innerHTML = dealerCards.map((c, i) => `<div class="card ${c.isRed ? 'red' : ''}">${i === 0 ? '?' : c.display}</div>`).join('');
+        } else {
+            dealerDiv.innerHTML = dealerCards.map(c => `<div class="card ${c.isRed ? 'red' : ''}">${c.display}</div>`).join('');
+            document.getElementById('dealerScore').innerText = `Очки: ${calculateScore(dealerCards)}`;
+        }
+    }
+    
+    async function startGame() {
+        let bet = parseFloat(document.getElementById('betAmount').value);
+        if (isNaN(bet) || bet <= 0) {
+            tg.showPopup({title: "Ошибка", message: "Введите сумму ставки", buttons: [{type: "ok"}]});
+            return;
+        }
+        if (bet > balance) {
+            tg.showPopup({title: "Ошибка", message: "Недостаточно средств", buttons: [{type: "ok"}]});
+            return;
+        }
+        
+        currentBet = bet;
+        await updateBalance(balance - currentBet);
+        
+        playerCards = [getRandomCard(), getRandomCard()];
+        dealerCards = [getRandomCard(), getRandomCard()];
+        gameActive = true;
+        
+        document.getElementById('betSection').style.display = 'none';
+        document.getElementById('gameArea').style.display = 'block';
+        renderCards();
+        
+        let playerScore = calculateScore(playerCards);
+        if (playerScore === 21) {
+            endGame('blackjack');
+        }
+    }
+    
+    async function hit() {
+        if (!gameActive) return;
+        playerCards.push(getRandomCard());
+        renderCards();
+        let score = calculateScore(playerCards);
+        if (score > 21) {
+            endGame('lose');
+        }
+    }
+    
+    async function stand() {
+        if (!gameActive) return;
+        gameActive = false;
+        let dealerScore = calculateScore(dealerCards);
+        while (dealerScore < 17) {
+            dealerCards.push(getRandomCard());
+            dealerScore = calculateScore(dealerCards);
+        }
+        renderCards();
+        
+        let playerScore = calculateScore(playerCards);
+        let result = '';
+        if (playerScore > 21) result = 'lose';
+        else if (dealerScore > 21) result = 'win';
+        else if (playerScore > dealerScore) result = 'win';
+        else if (playerScore < dealerScore) result = 'lose';
+        else result = 'draw';
+        
+        endGame(result);
+    }
+    
+    async function endGame(result) {
+        gameActive = false;
+        let winAmount = 0;
+        let message = '';
+        
+        if (result === 'win') {
+            winAmount = currentBet * 2;
+            message = '🎉 ВЫ ВЫИГРАЛИ! +' + winAmount.toFixed(2) + ' USDT';
+        } else if (result === 'blackjack') {
+            winAmount = currentBet * 2.5;
+            message = '🎰 BLACKJACK! +' + winAmount.toFixed(2) + ' USDT';
+        } else if (result === 'lose') {
+            winAmount = 0;
+            message = '💔 ВЫ ПРОИГРАЛИ... -' + currentBet.toFixed(2) + ' USDT';
+        } else {
+            winAmount = currentBet;
+            message = '🤝 НИЧЬЯ. Возврат ' + currentBet.toFixed(2) + ' USDT';
+        }
+        
+        if (winAmount > 0) {
+            await updateBalance(balance + winAmount);
+        }
+        
+        document.getElementById('gameMessage').innerHTML = message;
+        document.getElementById('hitBtn').disabled = true;
+        document.getElementById('standBtn').disabled = true;
+        
+        setTimeout(() => {
+            document.getElementById('betSection').style.display = 'flex';
+            document.getElementById('gameArea').style.display = 'none';
+            document.getElementById('gameMessage').innerHTML = '';
+            document.getElementById('hitBtn').disabled = false;
+            document.getElementById('standBtn').disabled = false;
+            loadBalance();
+        }, 3000);
+    }
+    
+    document.getElementById('startBtn').onclick = startGame;
+    document.getElementById('hitBtn').onclick = hit;
+    document.getElementById('standBtn').onclick = stand;
+    
+    loadBalance();
+</script>
+</body>
+</html>
