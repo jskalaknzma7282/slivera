@@ -3,3 +3,4 @@ python-dotenv==1.0.0
 asyncpg==0.29.0
 pytz==2024.1
 aiohttp==3.9.1
+flask==2.3.3
