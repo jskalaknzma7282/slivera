@@ -162,7 +162,11 @@
             let data = await res.json();
             balance = data.balance;
             document.getElementById('balance').innerText = balance.toFixed(2);
-        } catch(e) { console.log(e); }
+        } catch(e) { 
+            console.log(e);
+            balance = 10;
+            document.getElementById('balance').innerText = '10.00';
+        }
     }
     
     async function updateBalance(newBalance) {
@@ -324,6 +328,7 @@
     document.getElementById('standBtn').onclick = stand;
     
     loadBalance();
+    setInterval(loadBalance, 5000);
 </script>
 </body>
 </html>
