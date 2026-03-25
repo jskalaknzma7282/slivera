@@ -37,6 +37,10 @@ UTC_TZ = pytz.UTC
 
 CRYPTO_API_URL = "https://pay.crypt.bot/api"
 
+# Ссылки на каналы
+NEWS_CHANNEL = "https://t.me/+OJe0HsPWlqg5ZmFi"
+ORDER_CHANNEL = "https://t.me/+Bfu9e08IQ8k3YTEy"
+
 class Database:
     def __init__(self):
         self.pool = None
@@ -215,11 +219,11 @@ async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
     order_id = await db.create_order(0, "", "pending")
     
     text = (
-        "<blockquote>🔖 заявка создана</blockquote>\n\n"
-        "<i>• для принятия заявки нажмите кнопку ниже</i>"
+        "<b>🔖 Заявка создана</b>\n\n"
+        "<i>• Для принятия заявки нажмите кнопку ниже</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("принять заявку", url=f"https://t.me/{bot_username}?start=take_order_{order_id}")]
+        [InlineKeyboardButton("Принять заявку", url=f"https://t.me/{bot_username}?start=take_order_{order_id}")]
     ])
     msg = await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     await db.add_channel_message(order_id, msg.message_id)
@@ -269,11 +273,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Отправляем запрос номера
             msg = await context.bot.send_message(
                 user_id,
-                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                "<i>• формат не важен, на отправку материала у вас 60 секунд</i>",
+                "<b>✏️ Введите номер телефона</b>\n\n"
+                "<i>• Формат не важен, на отправку материала у вас 60 секунд</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
+                    [InlineKeyboardButton("Отмена", callback_data=f"cancel_{order_id}")]
                 ])
             )
             await db.add_order_message(order_id, msg.message_id)
@@ -282,24 +286,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Обычное приветствие (без параметра)
     text = (
-        "<blockquote><b>👋 Добро пожаловать в сервис JetMax!</b></blockquote>\n\n"
-        f"• В данном боте обрабатываются SMS заявки, новостной канал: {CHANNEL_LINK}"
+        "<b>👋 Добро пожаловать в сервис MaxHub!</b>\n\n"
+        f"<i>• <a href='{NEWS_CHANNEL}'>Новостной канал</a></i>\n"
+        f"<i>• <a href='{ORDER_CHANNEL}'>Канал приемка</a></i>\n\n"
+        "<i>• В данном боте обрабатываются SMS заявки</i>"
     )
     
     keyboard = None
     if user_id == ADMIN_ID:
         keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton("➕ новая заявка")]],
+            [[KeyboardButton("➕ Новая заявка")]],
             resize_keyboard=True
         )
     
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard, disable_web_page_preview=True)
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = await db.get_user(user_id)
     text = (
-        "<blockquote>💳 ваш баланс</blockquote>\n\n"
+        "<b>💳 Ваш баланс</b>\n\n"
         f"<i>• <code>{user['balance']:.2f}</code> USDT</i>\n\n"
         "<i>• Для вывода напишите вывод сумма</i>"
     )
@@ -312,8 +318,8 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(parts) != 2:
         await update.message.reply_text(
-            "<blockquote>❌ ошибка</blockquote>\n\n"
-            "<i>• используйте: вывод 4</i>",
+            "<b>❌ Ошибка</b>\n\n"
+            "<i>• Используйте: вывод 4</i>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -322,8 +328,8 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(parts[1])
     except:
         await update.message.reply_text(
-            "<blockquote>❌ ошибка</blockquote>\n\n"
-            "<i>• сумма должна быть числом</i>",
+            "<b>❌ Ошибка</b>\n\n"
+            "<i>• Сумма должна быть числом</i>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -332,16 +338,16 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user["balance"] < amount:
         await update.message.reply_text(
-            "<blockquote>❌ ошибка</blockquote>\n\n"
-            f"<i>• недостаточно средств. Ваш баланс: <code>{user['balance']:.2f}</code> USDT</i>",
+            "<b>❌ Ошибка</b>\n\n"
+            f"<i>• Недостаточно средств. Ваш баланс: <code>{user['balance']:.2f}</code> USDT</i>",
             parse_mode=ParseMode.HTML
         )
         return
     
     if not CRYPTO_PAY_TOKEN:
         await update.message.reply_text(
-            "<blockquote>❌ ошибка</blockquote>\n\n"
-            "<i>• вывод временно недоступен</i>",
+            "<b>❌ Ошибка</b>\n\n"
+            "<i>• Вывод временно недоступен</i>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -368,23 +374,23 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await db.update_balance(user_id, -amount)
                     
                     await update.message.reply_text(
-                        "<blockquote>💳 денюжки</blockquote>\n\n"
+                        "<b>💳 Денюжки</b>\n\n"
                         f"<i>• <code>{amount:.2f}</code> USDT отправлены на ваш кошелек в Crypto Pay</i>\n\n"
-                        "<i>• проверьте баланс в боте @CryptoBot</i>",
+                        "<i>• Проверьте баланс в боте @CryptoBot</i>",
                         parse_mode=ParseMode.HTML
                     )
                 else:
                     error = result.get("error", "неизвестная ошибка")
                     await update.message.reply_text(
-                        f"<blockquote>❌ ошибка перевода</blockquote>\n\n"
+                        f"<b>❌ Ошибка перевода</b>\n\n"
                         f"<i>• {error}</i>",
                         parse_mode=ParseMode.HTML
                     )
         except Exception as e:
             logger.error(f"Crypto Pay error: {e}")
             await update.message.reply_text(
-                "<blockquote>❌ ошибка</blockquote>\n\n"
-                "<i>• сервис временно недоступен</i>",
+                "<b>❌ Ошибка</b>\n\n"
+                "<i>• Сервис временно недоступен</i>",
                 parse_mode=ParseMode.HTML
             )
 
@@ -399,8 +405,8 @@ async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(parts) != 2:
         await update.message.reply_text(
-            "<blockquote>❌ ошибка</blockquote>\n\n"
-            "<i>• используйте: пополнение 100</i>",
+            "<b>❌ Ошибка</b>\n\n"
+            "<i>• Используйте: пополнение 100</i>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -409,15 +415,15 @@ async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(parts[1])
     except:
         await update.message.reply_text(
-            "<blockquote>❌ ошибка</blockquote>\n\n"
-            "<i>• сумма должна быть числом</i>",
+            "<b>❌ Ошибка</b>\n\n"
+            "<i>• Сумма должна быть числом</i>",
             parse_mode=ParseMode.HTML
         )
         return
     
     if not CRYPTO_PAY_TOKEN:
         await update.message.reply_text(
-            "<blockquote>❌ ошибка</blockquote>\n\n"
+            "<b>❌ Ошибка</b>\n\n"
             "<i>• Crypto Pay не настроен</i>",
             parse_mode=ParseMode.HTML
         )
@@ -445,24 +451,24 @@ async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     url = invoice.get("pay_url") or invoice.get("bot_url")
                     
                     await update.message.reply_text(
-                        f"<blockquote>💳 счет на пополнение</blockquote>\n\n"
-                        f"<i>• сумма: <code>{amount:.2f}</code> USDT</i>\n"
-                        f"<i>• ссылка: {url}</i>\n\n"
-                        "<i>• оплатите в @CryptoBot</i>",
+                        f"<b>💳 Счет на пополнение</b>\n\n"
+                        f"<i>• Сумма: <code>{amount:.2f}</code> USDT</i>\n"
+                        f"<i>• Ссылка: {url}</i>\n\n"
+                        "<i>• Оплатите в @CryptoBot</i>",
                         parse_mode=ParseMode.HTML
                     )
                 else:
                     error = result.get("error", "неизвестная ошибка")
                     await update.message.reply_text(
-                        f"<blockquote>❌ ошибка</blockquote>\n\n"
+                        f"<b>❌ Ошибка</b>\n\n"
                         f"<i>• {error}</i>",
                         parse_mode=ParseMode.HTML
                     )
         except Exception as e:
             logger.error(f"Crypto Pay error: {e}")
             await update.message.reply_text(
-                "<blockquote>❌ ошибка</blockquote>\n\n"
-                "<i>• сервис временно недоступен</i>",
+                "<b>❌ Ошибка</b>\n\n"
+                "<i>• Сервис временно недоступен</i>",
                 parse_mode=ParseMode.HTML
             )
 
@@ -525,12 +531,12 @@ async def start_phone_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, or
     await db.update_order_status(order_id, "cancelled")
     
     user_text = (
-        f"<blockquote>📌 заявка</blockquote>\n\n"
-        f"<i>статус: время вышло</i>\n"
-        f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
+        f"<b>📌 Заявка</b>\n\n"
+        f"<i>Статус: время вышло</i>\n"
+        f"<i>Дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+        [InlineKeyboardButton("Заявки", url=ORDER_CHANNEL)]
     ])
     
     order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
@@ -560,19 +566,19 @@ async def start_code_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, ord
     
     if phone:
         user_text = (
-            f"<blockquote>📌 заявка <code>#{phone}</code></blockquote>\n\n"
-            f"<i>статус: время вышло</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
+            f"<b>📌 Заявка <code>#{phone}</code></b>\n\n"
+            f"<i>Статус: время вышло</i>\n"
+            f"<i>Дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
         )
     else:
         user_text = (
-            f"<blockquote>📌 заявка</blockquote>\n\n"
-            f"<i>статус: время вышло</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
+            f"<b>📌 Заявка</b>\n\n"
+            f"<i>Статус: время вышло</i>\n"
+            f"<i>Дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
         )
     
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+        [InlineKeyboardButton("Заявки", url=ORDER_CHANNEL)]
     ])
     
     order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
@@ -609,11 +615,11 @@ async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, ord
             await db.update_order_status(order_id, "funded")
             
             user_text = (
-                f"<blockquote>🎉 денюжки</blockquote>\n\n"
-                f"<i>ваш счет пополнен: + <code>4.00</code> USDT</i>"
+                f"<b>🎉 Денюжки</b>\n\n"
+                f"<i>Ваш счет пополнен: + <code>4.00</code> USDT</i>"
             )
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+                [InlineKeyboardButton("Заявки", url=ORDER_CHANNEL)]
             ])
             order_msg = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
             if order_msg and order_msg["message_id"]:
@@ -636,17 +642,17 @@ async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, ord
             order_msg = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
             if order_msg and order_msg["message_id"]:
                 text = (
-                    f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
-                    f"<i>статус: подтверждена</i>\n"
-                    f"<i>до зачисления средств: <code>{timer_text}</code></i>\n"
-                    f"<i>дата: <code>{format_time(confirmed_at)}</code></i>"
+                    f"<b>🔖 Заявка <code>#{phone}</code></b>\n\n"
+                    f"<i>Статус: подтверждена</i>\n"
+                    f"<i>До зачисления средств: <code>{timer_text}</code></i>\n"
+                    f"<i>Дата: <code>{format_time(confirmed_at)}</code></i>"
                 )
                 try:
                     await context.bot.edit_message_text(
                         text, user_id, order_msg["message_id"],
                         parse_mode=ParseMode.HTML,
                         reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+                            [InlineKeyboardButton("Заявки", url=ORDER_CHANNEL)]
                         ])
                     )
                 except:
@@ -677,7 +683,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await topup_command(update, context)
         return
     
-    if text == "➕ новая заявка" and user_id == ADMIN_ID:
+    if text == "➕ Новая заявка" and user_id == ADMIN_ID:
         await publish_new_order(context)
         return
     
@@ -694,11 +700,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = normalize_phone(text)
         if not phone:
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("повторить", callback_data="retry_phone")]
+                [InlineKeyboardButton("Повторить", callback_data="retry_phone")]
             ])
             await update.message.reply_text(
-                "<blockquote>📌 ошибка</blockquote>\n\n"
-                "<i>• введен неккоректный номер телефона! формат: 7хххХХХхххх</i>",
+                "<b>📌 Ошибка</b>\n\n"
+                "<i>• Введен неккоректный номер телефона! Формат: 7хххХХХхххх</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
@@ -711,10 +717,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = await db.get_user(user_id)
         
         admin_text = (
-            f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
-            f"<i>от: {user['username'] or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
-            f"<i>номер: <code>{phone}</code></i>\n"
-            f"<i>время: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
+            f"<b>🔖 Заявка <code>#{phone}</code></b>\n\n"
+            f"<i>От: <code>{user['username'] or f'user_{user_id}'}</code> [<code>{user_id}</code>]</i>\n"
+            f"<i>Номер: <code>{phone}</code></i>\n"
+            f"<i>Время: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
         )
         keyboard = InlineKeyboardMarkup([
             [
@@ -728,8 +734,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.add_order_message(order_id, admin_msg.message_id, is_admin=True)
         
         await update.message.reply_text(
-            f"<blockquote>📮 заявка <code>#{phone}</code> в обработке</blockquote>\n\n"
-            "<i>• ожидайте запроса SMS (в среднем занимает ≈ 2м)</i>",
+            f"<b>📮 Заявка <code>#{phone}</code> в обработке</b>\n\n"
+            "<i>• Ожидайте запроса SMS (в среднем занимает ≈ 2м)</i>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -737,11 +743,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == "waiting_code":
         if not text.isdigit() or len(text) != 6:
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("повторить", callback_data="retry_code")]
+                [InlineKeyboardButton("Повторить", callback_data="retry_code")]
             ])
             await update.message.reply_text(
-                "<blockquote>📌 ошибка</blockquote>\n\n"
-                "<i>• введен неккоректный код! формат: хххххх</i>",
+                "<b>📌 Ошибка</b>\n\n"
+                "<i>• Введен неккоректный код! Формат: хххххх</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
@@ -751,10 +757,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = await db.get_user(user_id)
         
         admin_text = (
-            f"<blockquote>🔖 SMS! заявка <code>#{phone}</code></blockquote>\n\n"
-            f"<i>код: <code>{text}</code></i>\n"
-            f"<i>от: {user['username'] or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
+            f"<b>🔖 SMS! Заявка <code>#{phone}</code></b>\n\n"
+            f"<i>Код: <code>{text}</code></i>\n"
+            f"<i>От: <code>{user['username'] or f'user_{user_id}'}</code> [<code>{user_id}</code>]</i>\n"
+            f"<i>Дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
         )
         keyboard = InlineKeyboardMarkup([
             [
@@ -772,12 +778,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.set_active_session(user_id, order_id, "waiting_confirmation", {"phone": phone, "code": text})
         
         user_msg = await update.message.reply_text(
-            f"<blockquote>📮 SMS заявка <code>#{phone}</code></blockquote>\n\n"
-            f"<i>статус: код ожидает подтверждения</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>",
+            f"<b>📮 SMS заявка <code>#{phone}</code></b>\n\n"
+            f"<i>Статус: код ожидает подтверждения</i>\n"
+            f"<i>Дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("обновить", callback_data=f"check_status_{order_id}")]
+                [InlineKeyboardButton("Обновить", callback_data=f"check_status_{order_id}")]
             ])
         )
         await db.add_order_message(order_id, user_msg.message_id)
@@ -804,20 +810,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if phone:
             admin_text = (
-                f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
-                f"<i>от: {query.from_user.username or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
-                f"<i>статус: отменена</i>\n"
-                f"<i>время: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
+                f"<b>🔖 Заявка <code>#{phone}</code></b>\n\n"
+                f"<i>От: <code>{query.from_user.username or f'user_{user_id}'}</code> [<code>{user_id}</code>]</i>\n"
+                f"<i>Статус: отменена</i>\n"
+                f"<i>Время: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
             )
         else:
             admin_text = (
-                f"<blockquote>🔖 заявка</blockquote>\n\n"
-                f"<i>от: {query.from_user.username or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
-                f"<i>статус: отменена</i>"
+                f"<b>🔖 Заявка</b>\n\n"
+                f"<i>От: <code>{query.from_user.username or f'user_{user_id}'}</code> [<code>{user_id}</code>]</i>\n"
+                f"<i>Статус: отменена</i>"
             )
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("инфо", url=f"tg://user?id={user_id}")]
+            [InlineKeyboardButton("Инфо", url=f"tg://user?id={user_id}")]
         ])
         
         await context.bot.send_message(ADMIN_ID, admin_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
@@ -845,11 +851,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         user_msg = await context.bot.send_message(
             order["user_id"],
-            "<blockquote>📮 запрошено SMS</blockquote>\n\n"
-            "<i>• введите код из смс, у вас 60 секунд</i>",
+            "<b>📮 Запрошено SMS</b>\n\n"
+            "<i>• Введите код из смс, у вас 60 секунд</i>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
+                [InlineKeyboardButton("Отмена", callback_data=f"cancel_{order_id}")]
             ])
         )
         await db.add_order_message(order_id, user_msg.message_id)
@@ -869,9 +875,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.update_order_status(order_id, "rejected")
         
         user_text = (
-            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-            f"<i>статус: отменена</i>\n"
-            f"<i>причина: отклонена администрацией</i>"
+            f"<b>🔖 Заявка <code>#{order['phone']}</code></b>\n\n"
+            f"<i>Статус: отменена</i>\n"
+            f"<i>Причина: отклонена администрацией</i>"
         )
         await context.bot.send_message(
             order["user_id"],
@@ -902,12 +908,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
         if order_row and order_row["message_id"]:
             user_text = (
-                f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-                f"<i>статус: отменена</i>\n"
-                f"<i>причина: уже зарегистрирован</i>"
+                f"<b>🔖 Заявка <code>#{order['phone']}</code></b>\n\n"
+                f"<i>Статус: отменена</i>\n"
+                f"<i>Причина: уже зарегистрирован</i>"
             )
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+                [InlineKeyboardButton("Заявки", url=ORDER_CHANNEL)]
             ])
             try:
                 await context.bot.edit_message_text(
@@ -921,12 +927,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Failed to edit message: {e}")
         else:
             user_text = (
-                f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-                f"<i>статус: отменена</i>\n"
-                f"<i>причина: уже зарегистрирован</i>"
+                f"<b>🔖 Заявка <code>#{order['phone']}</code></b>\n\n"
+                f"<i>Статус: отменена</i>\n"
+                f"<i>Причина: уже зарегистрирован</i>"
             )
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+                [InlineKeyboardButton("Заявки", url=ORDER_CHANNEL)]
             ])
             await context.bot.send_message(
                 order["user_id"],
@@ -951,13 +957,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
         if order_row and order_row["message_id"]:
             user_text = (
-                f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-                f"<i>статус: отменена</i>\n"
-                f"<i>причина: ошибка/невалид</i>\n"
-                f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
+                f"<b>🔖 Заявка <code>#{order['phone']}</code></b>\n\n"
+                f"<i>Статус: отменена</i>\n"
+                f"<i>Причина: ошибка/невалид</i>\n"
+                f"<i>Дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
             )
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+                [InlineKeyboardButton("Заявки", url=ORDER_CHANNEL)]
             ])
             try:
                 await context.bot.edit_message_text(
@@ -984,12 +990,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.update_order_status(order_id, "confirmed", confirmed_at=confirmed_at)
         
         user_text = (
-            f"<blockquote>📮 SMS заявка <code>#{order['phone']}</code></blockquote>\n\n"
-            f"<i>статус: код ожидает подтверждения</i>\n"
-            f"<i>дата: <code>{format_time(confirmed_at)}</code></i>"
+            f"<b>📮 SMS заявка <code>#{order['phone']}</code></b>\n\n"
+            f"<i>Статус: код ожидает подтверждения</i>\n"
+            f"<i>Дата: <code>{format_time(confirmed_at)}</code></i>"
         )
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("обновить", callback_data=f"check_status_{order_id}")]
+            [InlineKeyboardButton("Обновить", callback_data=f"check_status_{order_id}")]
         ])
         
         order_row = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
@@ -1029,13 +1035,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         timer_text = f"{minutes:02d} мин"
         
         user_text = (
-            f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
-            f"<i>статус: подтверждена</i>\n"
-            f"<i>до зачисления средств: <code>{timer_text}</code></i>\n"
-            f"<i>дата: <code>{format_time(confirmed_at)}</code></i>"
+            f"<b>🔖 Заявка <code>#{order['phone']}</code></b>\n\n"
+            f"<i>Статус: подтверждена</i>\n"
+            f"<i>До зачисления средств: <code>{timer_text}</code></i>\n"
+            f"<i>Дата: <code>{format_time(confirmed_at)}</code></i>"
         )
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
+            [InlineKeyboardButton("Заявки", url=ORDER_CHANNEL)]
         ])
         await query.edit_message_text(
             user_text,
@@ -1056,11 +1062,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
             msg = await context.bot.send_message(
                 user_id,
-                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                "<i>• формат не важен, на отправку материала у вас 60 секунд</i>",
+                "<b>✏️ Введите номер телефона</b>\n\n"
+                "<i>• Формат не важен, на отправку материала у вас 60 секунд</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{session['order_id']}")]
+                    [InlineKeyboardButton("Отмена", callback_data=f"cancel_{session['order_id']}")]
                 ])
             )
             await db.add_order_message(session["order_id"], msg.message_id)
@@ -1073,11 +1079,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.delete()
             msg = await context.bot.send_message(
                 user_id,
-                "<blockquote>📮 запрошено SMS</blockquote>\n\n"
-                "<i>• введите код из смс, у вас 60 секунд</i>",
+                "<b>📮 Запрошено SMS</b>\n\n"
+                "<i>• Введите код из смс, у вас 60 секунд</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{session['order_id']}")]
+                    [InlineKeyboardButton("Отмена", callback_data=f"cancel_{session['order_id']}")]
                 ])
             )
             await db.add_order_message(session["order_id"], msg.message_id)
