@@ -129,13 +129,6 @@ class Database:
                     status, order_id
                 )
 
-    async def get_order_by_channel_message(self, channel_message_id: int):
-        async with self.pool.acquire() as conn:
-            return await conn.fetchrow(
-                "SELECT * FROM orders WHERE channel_message_id = $1",
-                channel_message_id
-            )
-
     async def get_active_session(self, user_id: int):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM active_sessions WHERE user_id = $1", user_id)
@@ -218,16 +211,17 @@ def format_time(dt: datetime) -> str:
     return dt.astimezone(MOSCOW_TZ).strftime("%H:%M UTC")
 
 async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
-    order_id = await db.create_order(0, "", "pending")
-    
+    bot_username = (await context.bot.get_me()).username
     text = (
         "<blockquote>🔖 заявка создана</blockquote>\n\n"
-        "<i>• для принятия заявки нажмите кнопку ниже, затем откройте чат с ботом</i>"
+        "<i>• для принятия заявки нажмите кнопку ниже и напишите /start</i>"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("принять заявку", callback_data=f"take_order_{order_id}")]
+        [InlineKeyboardButton("принять заявку", url=f"https://t.me/{bot_username}")]
     ])
     msg = await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    
+    order_id = await db.create_order(0, "", "pending")
     await db.add_channel_message(order_id, msg.message_id)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,37 +230,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await db.get_user(user_id, username)
     
-    if context.args:
-        arg = context.args[0]
-        if arg.startswith("take_order_"):
-            order_id = int(arg.split("_")[2])
-            order = await db.pool.fetchrow("SELECT user_id, status FROM orders WHERE id = $1", order_id)
-            if order and order["user_id"] == 0 and order["status"] == "pending":
-                session = await db.get_active_session(user_id)
-                if not session:
-                    await db.update_order_status(order_id, "taken", user_id=user_id)
-                    await db.set_active_session(user_id, order_id, "waiting_phone", {})
-                    
-                    channel_msg = await db.pool.fetchrow("SELECT channel_message_id FROM orders WHERE id = $1", order_id)
-                    if channel_msg and channel_msg["channel_message_id"]:
-                        try:
-                            await context.bot.delete_message(CHANNEL_ID, channel_msg["channel_message_id"])
-                        except:
-                            pass
-                    
-                    msg = await context.bot.send_message(
-                        user_id,
-                        "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                        "<i>• формат не важен, на отправку материала у вас 60 секунд</i>",
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
-                        ])
-                    )
-                    await db.add_order_message(order_id, msg.message_id)
-                    asyncio.create_task(start_phone_timer(context, user_id, order_id, 60))
-                    return
+    # Ищем свободную заявку
+    async with db.pool.acquire() as conn:
+        order = await conn.fetchrow("SELECT id, channel_message_id FROM orders WHERE status = 'pending' AND user_id = 0 LIMIT 1")
     
+    if order:
+        order_id = order["id"]
+        
+        session = await db.get_active_session(user_id)
+        if session:
+            await update.message.reply_text("У вас уже есть активная заявка!")
+            return
+        
+        # Закрепляем заявку
+        await db.update_order_status(order_id, "taken", user_id=user_id)
+        await db.set_active_session(user_id, order_id, "waiting_phone", {})
+        
+        # Удаляем сообщение из канала
+        if order["channel_message_id"]:
+            try:
+                await context.bot.delete_message(CHANNEL_ID, order["channel_message_id"])
+            except:
+                pass
+        
+        # Отправляем запрос номера
+        msg = await context.bot.send_message(
+            user_id,
+            "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
+            "<i>• формат не важен, на отправку материала у вас 60 секунд</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
+            ])
+        )
+        await db.add_order_message(order_id, msg.message_id)
+        asyncio.create_task(start_phone_timer(context, user_id, order_id, 60))
+        return
+    
+    # Если нет свободных заявок — обычное приветствие
     text = (
         "<blockquote><b>👋 Добро пожаловать в сервис JetMax!</b></blockquote>\n\n"
         f"• В данном боте обрабатываются SMS заявки, новостной канал: {CHANNEL_LINK}"
@@ -775,55 +776,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     logger.info(f"Callback: {data} from {user_id}")
-    
-    if data.startswith("take_order_"):
-        order_id = int(data.split("_")[2])
-        
-        order = await db.pool.fetchrow("SELECT user_id, status FROM orders WHERE id = $1", order_id)
-        if not order:
-            await query.answer("Заявка не найдена", show_alert=True)
-            return
-        
-        if order["user_id"] != 0 and order["user_id"] is not None:
-            await query.answer("Заявка уже занята другим пользователем!", show_alert=True)
-            return
-        
-        if order["status"] != "pending":
-            await query.answer("Заявка уже обработана", show_alert=True)
-            return
-        
-        session = await db.get_active_session(user_id)
-        if session:
-            await query.answer("У вас уже есть активная заявка!", show_alert=True)
-            return
-        
-        await db.update_order_status(order_id, "taken", user_id=user_id)
-        await db.set_active_session(user_id, order_id, "waiting_phone", {})
-        
-        try:
-            await query.message.delete()
-        except:
-            pass
-        
-        try:
-            msg = await context.bot.send_message(
-                user_id,
-                "<blockquote>✏️ введите номер телефона</blockquote>\n\n"
-                "<i>• формат не важен, на отправку материала у вас 60 секунд</i>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("отмена", callback_data=f"cancel_{order_id}")]
-                ])
-            )
-            await db.add_order_message(order_id, msg.message_id)
-            asyncio.create_task(start_phone_timer(context, user_id, order_id, 60))
-        except Exception as e:
-            logger.error(f"Failed to send: {e}")
-            await db.clear_active_session(user_id)
-            await db.update_order_status(order_id, "cancelled")
-            await query.answer("Сначала напишите /start в личку бота!", show_alert=True)
-        return
-    
     await query.answer()
     
     if data.startswith("cancel_"):
