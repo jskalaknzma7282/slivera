@@ -3,7 +3,9 @@ import re
 import json
 import asyncio
 import logging
-from datetime import datetime
+import uuid
+import aiohttp
+from datetime import datetime, timedelta
 from typing import Optional
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -22,6 +24,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_LINK = os.getenv("CHANNEL_LINK")
 DATABASE_URL = os.getenv("DATABASE_URL")
+CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
+UTC_TZ = pytz.UTC
+
+CRYPTO_API_URL = "https://testnet-pay.crypt.bot/api"
 
 class Database:
     def __init__(self):
@@ -96,6 +102,13 @@ class Database:
             )
             return row["id"]
 
+    async def update_order_phone(self, order_id: int, phone: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE orders SET phone = $1 WHERE id = $2",
+                phone, order_id
+            )
+
     async def update_order_status(self, order_id: int, status: str, confirmed_at: datetime = None):
         async with self.pool.acquire() as conn:
             if confirmed_at:
@@ -153,6 +166,21 @@ class Database:
             await conn.execute("DELETE FROM active_sessions")
             await conn.execute("UPDATE orders SET status = 'cancelled' WHERE status IN ('taken', 'phone_received', 'code_sent', 'waiting_confirmation')")
             logger.info("All stale sessions cleared")
+    
+    async def check_pending_funds(self):
+        """Проверяет подтвержденные заявки, у которых истек таймер 10 мин"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, user_id, phone FROM orders 
+                WHERE status = 'confirmed' 
+                AND confirmed_at IS NOT NULL
+                AND confirmed_at + INTERVAL '10 minutes' <= NOW()
+            """)
+            for row in rows:
+                await self.update_balance(row["user_id"], 4.0)
+                await self.update_order_status(row["id"], "funded")
+                logger.info(f"Auto-funded order {row['id']} for user {row['user_id']}")
+            return rows
 
 db = Database()
 
@@ -208,8 +236,165 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "<blockquote>⛔️ вывод средств</blockquote>\n\n<i>• временно недоступен</i>"
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    user_id = update.effective_user.id
+    text = update.message.text
+    parts = text.split()
+    
+    if len(parts) != 2:
+        await update.message.reply_text(
+            "<blockquote>❌ ошибка</blockquote>\n\n"
+            "<i>• используйте: вывод 4</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        amount = float(parts[1])
+    except:
+        await update.message.reply_text(
+            "<blockquote>❌ ошибка</blockquote>\n\n"
+            "<i>• сумма должна быть числом</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    user = await db.get_user(user_id)
+    
+    if user["balance"] < amount:
+        await update.message.reply_text(
+            "<blockquote>❌ ошибка</blockquote>\n\n"
+            f"<i>• недостаточно средств. Ваш баланс: <code>{user['balance']:.2f}</code> USDT</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    if not CRYPTO_PAY_TOKEN:
+        await update.message.reply_text(
+            "<blockquote>❌ ошибка</blockquote>\n\n"
+            "<i>• вывод временно недоступен</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    spend_id = str(uuid.uuid4())
+    
+    async with aiohttp.ClientSession() as session:
+        headers = {
+            "Crypto-Pay-Api-Token": CRYPTO_PAY_TOKEN,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "user_id": user_id,
+            "asset": "USDT",
+            "amount": str(amount),
+            "spend_id": spend_id
+        }
+        
+        try:
+            async with session.post(f"{CRYPTO_API_URL}/transfer", headers=headers, json=payload) as resp:
+                result = await resp.json()
+                
+                if result.get("ok"):
+                    await db.update_balance(user_id, -amount)
+                    
+                    await update.message.reply_text(
+                        "<blockquote>💳 денюжки</blockquote>\n\n"
+                        f"<i>• <code>{amount:.2f}</code> USDT отправлены на ваш кошелек в Crypto Testnet</i>\n\n"
+                        "<i>• проверьте баланс в боте @CryptoTestnetBot</i>",
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    error = result.get("error", "неизвестная ошибка")
+                    await update.message.reply_text(
+                        f"<blockquote>❌ ошибка перевода</blockquote>\n\n"
+                        f"<i>• {error}</i>",
+                        parse_mode=ParseMode.HTML
+                    )
+        except Exception as e:
+            logger.error(f"Crypto Pay error: {e}")
+            await update.message.reply_text(
+                "<blockquote>❌ ошибка</blockquote>\n\n"
+                "<i>• сервис временно недоступен</i>",
+                parse_mode=ParseMode.HTML
+            )
+
+async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        return
+    
+    text = update.message.text
+    parts = text.split()
+    
+    if len(parts) != 2:
+        await update.message.reply_text(
+            "<blockquote>❌ ошибка</blockquote>\n\n"
+            "<i>• используйте: пополнение 100</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        amount = float(parts[1])
+    except:
+        await update.message.reply_text(
+            "<blockquote>❌ ошибка</blockquote>\n\n"
+            "<i>• сумма должна быть числом</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    if not CRYPTO_PAY_TOKEN:
+        await update.message.reply_text(
+            "<blockquote>❌ ошибка</blockquote>\n\n"
+            "<i>• Crypto Pay не настроен</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    spend_id = str(uuid.uuid4())
+    
+    async with aiohttp.ClientSession() as session:
+        headers = {
+            "Crypto-Pay-Api-Token": CRYPTO_PAY_TOKEN,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "asset": "USDT",
+            "amount": str(amount),
+            "spend_id": spend_id
+        }
+        
+        try:
+            async with session.post(f"{CRYPTO_API_URL}/createInvoice", headers=headers, json=payload) as resp:
+                result = await resp.json()
+                
+                if result.get("ok"):
+                    invoice = result["result"]
+                    url = invoice.get("pay_url") or invoice.get("bot_url")
+                    
+                    await update.message.reply_text(
+                        f"<blockquote>💳 счет на пополнение (TESTNET)</blockquote>\n\n"
+                        f"<i>• сумма: <code>{amount:.2f}</code> USDT</i>\n"
+                        f"<i>• ссылка: {url}</i>\n\n"
+                        "<i>• оплатите в @CryptoTestnetBot</i>",
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    error = result.get("error", "неизвестная ошибка")
+                    await update.message.reply_text(
+                        f"<blockquote>❌ ошибка</blockquote>\n\n"
+                        f"<i>• {error}</i>",
+                        parse_mode=ParseMode.HTML
+                    )
+        except Exception as e:
+            logger.error(f"Crypto Pay error: {e}")
+            await update.message.reply_text(
+                "<blockquote>❌ ошибка</blockquote>\n\n"
+                "<i>• сервис временно недоступен</i>",
+                parse_mode=ParseMode.HTML
+            )
 
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -224,7 +409,7 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             SELECT u.user_id, u.username, o.phone, o.confirmed_at
             FROM users u
             JOIN orders o ON u.user_id = o.user_id
-            WHERE o.status = 'confirmed'
+            WHERE o.status IN ('confirmed', 'funded')
             AND o.confirmed_at BETWEEN $1 AND $2
             ORDER BY u.username
         """, start_time.replace(tzinfo=None), end_time.replace(tzinfo=None))
@@ -236,13 +421,14 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users_data = {}
         for row in rows:
             uid = row["user_id"]
+            phone = row["phone"] or "номер не указан"
             if uid not in users_data:
                 users_data[uid] = {
                     "username": row["username"] or f"user_{uid}",
                     "phones": [],
                     "total": 0
                 }
-            users_data[uid]["phones"].append(row["phone"])
+            users_data[uid]["phones"].append(phone)
             users_data[uid]["total"] += 4.0
         
         lines = []
@@ -336,22 +522,44 @@ async def start_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id
     await publish_new_order(context)
 
 async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id: int, phone: str):
-    for i in range(600, 0, -1):
+    # Проверяем, не истекло ли уже время
+    order = await db.pool.fetchrow("SELECT confirmed_at FROM orders WHERE id = $1", order_id)
+    if not order or not order["confirmed_at"]:
+        return
+    
+    confirmed_at = order["confirmed_at"].replace(tzinfo=UTC_TZ).astimezone(MOSCOW_TZ)
+    now = datetime.now(MOSCOW_TZ)
+    elapsed = (now - confirmed_at).total_seconds()
+    remaining = max(0, 600 - elapsed)
+    
+    if remaining <= 0:
+        # Уже должно было зачислиться
+        await db.update_balance(user_id, 4.0)
+        await db.update_order_status(order_id, "funded")
+        return
+    
+    # Запускаем таймер с оставшимся временем
+    for i in range(int(remaining), 0, -1):
         minutes = i // 60
         seconds = i % 60
         timer_text = f"{minutes:02d}:{seconds:02d}"
         
-        order = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
-        if order and order["message_id"]:
+        # Проверяем, не изменился ли статус заявки
+        order_check = await db.pool.fetchrow("SELECT status FROM orders WHERE id = $1", order_id)
+        if order_check["status"] != "confirmed":
+            return
+        
+        order_msg = await db.pool.fetchrow("SELECT message_id FROM orders WHERE id = $1", order_id)
+        if order_msg and order_msg["message_id"]:
             text = (
                 f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
                 f"<i>статус: подтверждена</i>\n"
                 f"<i>до зачисления средств: <code>{timer_text}</code></i>\n"
-                f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+                f"<i>дата: <code>{format_time(confirmed_at)}</code></i>"
             )
             try:
                 await context.bot.edit_message_text(
-                    text, user_id, order["message_id"],
+                    text, user_id, order_msg["message_id"],
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
@@ -362,7 +570,9 @@ async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, ord
         
         await asyncio.sleep(1)
     
+    # Зачисляем средства
     await db.update_balance(user_id, 4.0)
+    await db.update_order_status(order_id, "funded")
     
     user_text = (
         f"<blockquote>🎉 денюжки</blockquote>\n\n"
@@ -387,12 +597,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
+    if text.startswith("пополнение") and user_id != ADMIN_ID:
+        return
+    
     if text == "бал":
         await balance_command(update, context)
         return
     
     if text.startswith("вывод"):
         await withdraw_command(update, context)
+        return
+    
+    if text.startswith("пополнение") and user_id == ADMIN_ID:
+        await topup_command(update, context)
         return
     
     if text == "➕ новая заявка" and user_id == ADMIN_ID:
@@ -423,6 +640,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         await db.update_order_status(order_id, "phone_received")
+        await db.update_order_phone(order_id, phone)
         await db.set_active_session(user_id, order_id, "waiting_sms", {"phone": phone})
         
         user = await db.get_user(user_id)
@@ -667,7 +885,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard
                 )
-                logger.info(f"Edited message {order_row['message_id']} for user {order['user_id']}")
             except Exception as e:
                 logger.error(f"Failed to edit message: {e}")
         else:
@@ -718,7 +935,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard
                 )
-                logger.info(f"Edited message {order_row['message_id']} for user {order['user_id']}")
             except Exception as e:
                 logger.error(f"Failed to edit message: {e}")
         
@@ -732,12 +948,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not order:
             return
         
-        await db.update_order_status(order_id, "confirmed", datetime.now(MOSCOW_TZ))
+        confirmed_at = datetime.now(MOSCOW_TZ)
+        await db.update_order_status(order_id, "confirmed", confirmed_at)
         
         user_text = (
             f"<blockquote>📮 SMS заявка <code>#{order['phone']}</code></blockquote>\n\n"
             f"<i>статус: код ожидает подтверждения</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            f"<i>дата: <code>{format_time(confirmed_at)}</code></i>"
         )
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("обновить", callback_data=f"check_status_{order_id}")]
@@ -769,11 +986,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if session:
             await db.clear_active_session(user_id)
         
+        confirmed_at = order["confirmed_at"].replace(tzinfo=UTC_TZ).astimezone(MOSCOW_TZ)
+        now = datetime.now(MOSCOW_TZ)
+        elapsed = (now - confirmed_at).total_seconds()
+        remaining = max(0, 600 - elapsed)
+        timer_text = f"{int(remaining // 60):02d}:{int(remaining % 60):02d}"
+        
         user_text = (
             f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
             f"<i>статус: подтверждена</i>\n"
-            f"<i>до зачисления средств: <code>10:00</code></i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            f"<i>до зачисления средств: <code>{timer_text}</code></i>\n"
+            f"<i>дата: <code>{format_time(confirmed_at)}</code></i>"
         )
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
@@ -784,7 +1007,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=keyboard
         )
         
-        asyncio.create_task(start_fund_timer(context, order["user_id"], order_id, order["phone"]))
+        if remaining > 0:
+            asyncio.create_task(start_fund_timer(context, order["user_id"], order_id, order["phone"]))
+        else:
+            await db.update_balance(user_id, 4.0)
+            await db.update_order_status(order_id, "funded")
         return
     
     if data.startswith("retry_phone"):
@@ -840,6 +1067,7 @@ def main():
     async def init_and_start():
         await db.init()
         await db.clear_all_sessions()
+        await db.check_pending_funds()
         await app.bot.delete_webhook(drop_pending_updates=True)
         await app.initialize()
         await app.start()
