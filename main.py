@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 UTC_TZ = pytz.UTC
 
-CRYPTO_API_URL = "https://testnet-pay.crypt.bot/api"
+CRYPTO_API_URL = "https://pay.crypt.bot/api"
 
 class Database:
     def __init__(self):
@@ -168,7 +168,6 @@ class Database:
             logger.info("All stale sessions cleared")
     
     async def check_pending_funds(self):
-        """Проверяет подтвержденные заявки, у которых истек таймер 10 мин"""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT id, user_id, phone FROM orders 
@@ -193,6 +192,8 @@ def normalize_phone(phone: str) -> Optional[str]:
     return None
 
 def format_time(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC_TZ)
     return dt.astimezone(MOSCOW_TZ).strftime("%H:%M UTC")
 
 async def publish_new_order(context: ContextTypes.DEFAULT_TYPE):
@@ -299,8 +300,8 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     await update.message.reply_text(
                         "<blockquote>💳 денюжки</blockquote>\n\n"
-                        f"<i>• <code>{amount:.2f}</code> USDT отправлены на ваш кошелек в Crypto Testnet</i>\n\n"
-                        "<i>• проверьте баланс в боте @CryptoTestnetBot</i>",
+                        f"<i>• <code>{amount:.2f}</code> USDT отправлены на ваш кошелек в Crypto Pay</i>\n\n"
+                        "<i>• проверьте баланс в боте @CryptoBot</i>",
                         parse_mode=ParseMode.HTML
                     )
                 else:
@@ -375,10 +376,10 @@ async def topup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     url = invoice.get("pay_url") or invoice.get("bot_url")
                     
                     await update.message.reply_text(
-                        f"<blockquote>💳 счет на пополнение (TESTNET)</blockquote>\n\n"
+                        f"<blockquote>💳 счет на пополнение</blockquote>\n\n"
                         f"<i>• сумма: <code>{amount:.2f}</code> USDT</i>\n"
                         f"<i>• ссылка: {url}</i>\n\n"
-                        "<i>• оплатите в @CryptoTestnetBot</i>",
+                        "<i>• оплатите в @CryptoBot</i>",
                         parse_mode=ParseMode.HTML
                     )
                 else:
@@ -495,13 +496,13 @@ async def start_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id
         user_text = (
             f"<blockquote>📌 заявка <code>#{phone}</code></blockquote>\n\n"
             f"<i>статус: время вышло</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
         )
     else:
         user_text = (
             f"<blockquote>📌 заявка</blockquote>\n\n"
             f"<i>статус: время вышло</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
         )
     
     keyboard = InlineKeyboardMarkup([
@@ -522,29 +523,28 @@ async def start_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id
     await publish_new_order(context)
 
 async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, order_id: int, phone: str):
-    # Проверяем, не истекло ли уже время
     order = await db.pool.fetchrow("SELECT confirmed_at FROM orders WHERE id = $1", order_id)
     if not order or not order["confirmed_at"]:
         return
     
-    confirmed_at = order["confirmed_at"].replace(tzinfo=UTC_TZ).astimezone(MOSCOW_TZ)
-    now = datetime.now(MOSCOW_TZ)
+    confirmed_at = order["confirmed_at"]
+    if confirmed_at.tzinfo is None:
+        confirmed_at = confirmed_at.replace(tzinfo=UTC_TZ)
+    
+    now = datetime.now(UTC_TZ)
     elapsed = (now - confirmed_at).total_seconds()
     remaining = max(0, 600 - elapsed)
     
     if remaining <= 0:
-        # Уже должно было зачислиться
         await db.update_balance(user_id, 4.0)
         await db.update_order_status(order_id, "funded")
         return
     
-    # Запускаем таймер с оставшимся временем
     for i in range(int(remaining), 0, -1):
         minutes = i // 60
         seconds = i % 60
         timer_text = f"{minutes:02d}:{seconds:02d}"
         
-        # Проверяем, не изменился ли статус заявки
         order_check = await db.pool.fetchrow("SELECT status FROM orders WHERE id = $1", order_id)
         if order_check["status"] != "confirmed":
             return
@@ -570,7 +570,6 @@ async def start_fund_timer(context: ContextTypes.DEFAULT_TYPE, user_id: int, ord
         
         await asyncio.sleep(1)
     
-    # Зачисляем средства
     await db.update_balance(user_id, 4.0)
     await db.update_order_status(order_id, "funded")
     
@@ -649,7 +648,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
             f"<i>от: {user['username'] or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
             f"<i>номер: <code>{phone}</code></i>\n"
-            f"<i>время: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            f"<i>время: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
         )
         keyboard = InlineKeyboardMarkup([
             [
@@ -689,7 +688,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<blockquote>🔖 SMS! заявка <code>#{phone}</code></blockquote>\n\n"
             f"<i>код: <code>{text}</code></i>\n"
             f"<i>от: {user['username'] or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+            f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
         )
         keyboard = InlineKeyboardMarkup([
             [
@@ -709,7 +708,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_msg = await update.message.reply_text(
             f"<blockquote>📮 SMS заявка <code>#{phone}</code></blockquote>\n\n"
             f"<i>статус: код ожидает подтверждения</i>\n"
-            f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>",
+            f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("обновить", callback_data=f"check_status_{order_id}")]
@@ -775,7 +774,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<blockquote>🔖 заявка <code>#{phone}</code></blockquote>\n\n"
                 f"<i>от: {query.from_user.username or f'user_{user_id}'} [<code>{user_id}</code>]</i>\n"
                 f"<i>статус: отменена</i>\n"
-                f"<i>время: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+                f"<i>время: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
             )
         else:
             admin_text = (
@@ -922,7 +921,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
                 f"<i>статус: отменена</i>\n"
                 f"<i>причина: ошибка/невалид</i>\n"
-                f"<i>дата: <code>{format_time(datetime.now(MOSCOW_TZ))}</code></i>"
+                f"<i>дата: <code>{format_time(datetime.now(UTC_TZ))}</code></i>"
             )
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("заявки", url=CHANNEL_LINK)]
@@ -948,7 +947,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not order:
             return
         
-        confirmed_at = datetime.now(MOSCOW_TZ)
+        confirmed_at = datetime.now(UTC_TZ)
         await db.update_order_status(order_id, "confirmed", confirmed_at)
         
         user_text = (
@@ -986,11 +985,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if session:
             await db.clear_active_session(user_id)
         
-        confirmed_at = order["confirmed_at"].replace(tzinfo=UTC_TZ).astimezone(MOSCOW_TZ)
-        now = datetime.now(MOSCOW_TZ)
+        confirmed_at = order["confirmed_at"]
+        if confirmed_at.tzinfo is None:
+            confirmed_at = confirmed_at.replace(tzinfo=UTC_TZ)
+        
+        now = datetime.now(UTC_TZ)
         elapsed = (now - confirmed_at).total_seconds()
         remaining = max(0, 600 - elapsed)
-        timer_text = f"{int(remaining // 60):02d}:{int(remaining % 60):02d}"
+        minutes = int(remaining // 60)
+        seconds = int(remaining % 60)
+        timer_text = f"{minutes:02d}:{seconds:02d}"
         
         user_text = (
             f"<blockquote>🔖 заявка <code>#{order['phone']}</code></blockquote>\n\n"
@@ -1068,6 +1072,17 @@ def main():
         await db.init()
         await db.clear_all_sessions()
         await db.check_pending_funds()
+        
+        # Запускаем таймеры для оставшихся подтвержденных заявок
+        async with db.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, user_id, phone, confirmed_at FROM orders 
+                WHERE status = 'confirmed' 
+                AND confirmed_at + INTERVAL '10 minutes' > NOW()
+            """)
+            for row in rows:
+                asyncio.create_task(start_fund_timer(app, row["user_id"], row["id"], row["phone"]))
+        
         await app.bot.delete_webhook(drop_pending_updates=True)
         await app.initialize()
         await app.start()
