@@ -1,4 +1,7 @@
 import asyncio
+import websockets
+import json
+import ssl
 import os
 import traceback
 from typing import Dict
@@ -12,6 +15,66 @@ from dotenv import load_dotenv
 
 from vkmax.client import MaxClient
 
+# ========== ТЕСТ ПОДКЛЮЧЕНИЯ К MAX ==========
+async def test_max_connection():
+    print("=" * 60)
+    print("🔍 ЗАПУСК ТЕСТА ПОДКЛЮЧЕНИЯ К MAX")
+    print("=" * 60)
+    
+    uri = "wss://ws-api.oneme.ru/websocket"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Origin": "https://web.max.ru",
+        "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits"
+    }
+    
+    try:
+        print("1. Подключаюсь к WebSocket...")
+        async with websockets.connect(uri, extra_headers=headers, ssl=ssl.create_default_context()) as ws:
+            print("2. ✅ WebSocket подключён!")
+            
+            # Отправляем номер
+            auth_msg = {
+                "type": "auth",
+                "payload": {
+                    "phone": "+79379042009"
+                }
+            }
+            print(f"3. Отправляю: {json.dumps(auth_msg)}")
+            await ws.send(json.dumps(auth_msg))
+            
+            # Ждём ответ
+            print("4. Ожидаю ответ...")
+            response = await ws.recv()
+            print(f"5. ✅ Получен ответ!")
+            print(f"6. ТЕКСТ ОТВЕТА: {response}")
+            
+            # Парсим JSON
+            try:
+                data = json.loads(response)
+                print(f"7. РАЗОБРАННЫЙ JSON:")
+                print(json.dumps(data, indent=2, ensure_ascii=False))
+                
+                # Проверяем наличие поля token
+                if "payload" in data:
+                    if "token" in data["payload"]:
+                        print(f"8. ✅ Найден token в payload.token: {data['payload']['token']}")
+                    else:
+                        print("8. ❌ В payload нет поля token")
+                        print(f"   Поля в payload: {list(data['payload'].keys())}")
+                
+            except json.JSONDecodeError:
+                print("7. ❌ Не удалось распарсить JSON")
+            
+    except Exception as e:
+        print(f"❌ ОШИБКА: {type(e).__name__}: {e}")
+        traceback.print_exc()
+    
+    print("=" * 60)
+    print("🔍 ТЕСТ ЗАВЕРШЁН")
+    print("=" * 60)
+
 # ========== ЗАГРУЗКА ПЕРЕМЕННЫХ ==========
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -19,7 +82,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не найден в .env файле")
 
-# ========== ИНИЦИАЛИЗАЦИЯ ==========
+# ========== ИНИЦИАЛИЗАЦИЯ БОТА ==========
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -63,7 +126,7 @@ async def process_phone(message: types.Message, state: FSMContext):
     try:
         # Создаём клиент
         client = MaxClient()
-        print(f"[DEBUG] Клиент создан: {client}")
+        print(f"[DEBUG] Клиент создан")
         
         # Подключаемся к WebSocket
         print(f"[DEBUG] Вызываю client.connect()...")
@@ -73,7 +136,7 @@ async def process_phone(message: types.Message, state: FSMContext):
         # Отправляем номер
         print(f"[DEBUG] Вызываю client.send_code({phone})...")
         sms_token = await client.send_code(phone)
-        print(f"[DEBUG] send_code вернул: {sms_token} (тип: {type(sms_token)})")
+        print(f"[DEBUG] send_code вернул: {sms_token}")
         
         # Сохраняем сессию
         temp_sessions[user_id] = {
@@ -129,7 +192,6 @@ async def process_code(message: types.Message, state: FSMContext):
         print(f"[DEBUG] Вызываю client.sign_in({sms_token}, {code})...")
         account_data = await client.sign_in(sms_token, code)
         print(f"[DEBUG] sign_in вернул: {account_data}")
-        print(f"[DEBUG] Тип ответа: {type(account_data)}")
         
         # Пробуем разные пути к токену
         login_token = None
@@ -151,12 +213,6 @@ async def process_code(message: types.Message, state: FSMContext):
             login_token = account_data['data']['token']
             print(f"[DEBUG] Токен найден по пути data.token")
         
-        # Если пришёл список
-        elif isinstance(account_data, list) and len(account_data) > 0:
-            print(f"[DEBUG] Ответ - список, ищу токен в первом элементе")
-            if 'token' in account_data[0]:
-                login_token = account_data[0]['token']
-        
         # Если ничего не нашли
         if not login_token:
             print(f"[DEBUG] НЕ УДАЛОСЬ НАЙТИ ТОКЕН в ответе")
@@ -174,19 +230,17 @@ async def process_code(message: types.Message, state: FSMContext):
         await message.answer(
             f"✅ **Регистрация в Max успешна!**\n\n"
             f"📱 Номер: `{phone}`\n"
-            f"🔑 Токен: `{login_token[:20]}...` (полный сохранён в консоли)\n"
+            f"🔑 Токен: `{login_token[:20]}...`\n"
             f"🆔 Device ID: `{device_id}`\n\n"
-            f"⚠️ Сохраните эти данные для будущего входа.",
+            f"⚠️ Сохраните эти данные.",
             parse_mode="Markdown"
         )
         
         # Выводим полный токен в консоль
-        print(f"[DEBUG] ========== ПОЛНЫЙ ТОКЕН ПОЛЬЗОВАТЕЛЯ ==========")
-        print(f"[DEBUG] User ID: {user_id}")
-        print(f"[DEBUG] Phone: {phone}")
+        print(f"[DEBUG] ========== ПОЛНЫЙ ТОКЕН ==========")
         print(f"[DEBUG] Token: {login_token}")
         print(f"[DEBUG] Device ID: {device_id}")
-        print(f"[DEBUG] ================================================")
+        print(f"[DEBUG] ==================================")
         
         # Очищаем сессию
         del temp_sessions[user_id]
@@ -209,9 +263,15 @@ async def process_code(message: types.Message, state: FSMContext):
 
 # ========== ЗАПУСК БОТА ==========
 async def main():
-    print("=" * 50)
+    print("=" * 60)
     print("🚀 Бот запущен с режимом отладки")
-    print("=" * 50)
+    print("=" * 60)
+    
+    # Запускаем тест подключения
+    await test_max_connection()
+    
+    # Запускаем бота
+    print("\n🤖 Запускаю Telegram бота...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
