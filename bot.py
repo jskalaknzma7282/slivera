@@ -14,17 +14,28 @@ from vkmax.client import MaxClient
 
 # ========== ПАТЧ ДЛЯ vkmax ==========
 print("🔧 Применяю патч для vkmax...")
+
+# Сохраняем оригинальный метод
 _original_send_code = MaxClient.send_code
 
 async def patched_send_code(self, phone: str):
-    """Исправленная версия send_code - возвращает payload целиком"""
-    start_auth_response = await self.ws.send_and_receive(
-        "auth", {"phone": phone}
-    )
-    # Возвращаем весь payload (там будет hash или другая информация)
-    if "payload" in start_auth_response:
-        return start_auth_response["payload"]
-    return start_auth_response
+    """Исправленная версия send_code"""
+    # Отправляем запрос через websocket
+    request = {
+        "type": "auth",
+        "payload": {
+            "phone": phone
+        }
+    }
+    
+    # Используем внутренний websocket клиент
+    await self._ws.send_json(request)
+    response = await self._ws.recv_json()
+    
+    # Возвращаем весь payload (там будет hash)
+    if "payload" in response:
+        return response["payload"]
+    return response
 
 MaxClient.send_code = patched_send_code
 print("✅ vkmax.send_code исправлен")
@@ -117,8 +128,7 @@ async def process_code(message: types.Message, state: FSMContext):
     await message.answer("🔐 Подтверждаю код...")
     
     try:
-        # Используем sign_in с правильными параметрами
-        # В зависимости от структуры auth_payload, может понадобиться hash
+        # Используем sign_in
         account_data = await client.sign_in(auth_payload, code)
         print(f"[DEBUG] account_data: {account_data}")
         
@@ -130,6 +140,8 @@ async def process_code(message: types.Message, state: FSMContext):
             login_token = account_data["payload"]["tokenAttrs"]["LOGIN"]["token"]
         elif "token" in account_data:
             login_token = account_data["token"]
+        elif "data" in account_data and "token" in account_data["data"]:
+            login_token = account_data["data"]["token"]
         
         if not login_token:
             await message.answer(f"❌ Не удалось получить токен. Ответ: {str(account_data)[:200]}")
@@ -143,7 +155,10 @@ async def process_code(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
         
-        print(f"[DEBUG] Токен: {login_token}")
+        print(f"[DEBUG] ========== ПОЛНЫЙ ТОКЕН ==========")
+        print(f"[DEBUG] Token: {login_token}")
+        print(f"[DEBUG] Device ID: {device_id}")
+        print(f"[DEBUG] ==================================")
         
         del temp_sessions[user_id]
         await state.clear()
