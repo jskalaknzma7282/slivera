@@ -4,23 +4,6 @@ import struct
 import msgpack
 import uuid
 import random
-import lz4.block
-
-def brute_force_decompress(payload):
-    """Перебирает смещения и пытается распаковать LZ4"""
-    for offset in range(0, min(20, len(payload))):
-        try:
-            decompressed = lz4.block.decompress(payload[offset:])
-            print(f"✅ Смещение {offset}: распаковано {len(decompressed)} байт")
-            try:
-                data = msgpack.unpackb(decompressed, raw=False)
-                print(f"📦 Распаковано: {data}")
-                return data
-            except:
-                print(f"   Не удалось распаковать MessagePack")
-        except Exception as e:
-            print(f"❌ Смещение {offset}: {e}")
-    return None
 
 def test_handshake():
     print("🔌 Подключение к api.oneme.ru:443...")
@@ -63,16 +46,16 @@ def test_handshake():
     # Упаковываем
     payload_bytes = msgpack.packb(handshake_payload)
     header = bytearray(10)
-    header[0] = 10  # ver
-    header[1] = 0   # cmd high
-    header[2] = 0   # cmd low
-    header[3] = 1   # seq
-    header[4] = 0   # opcode high
-    header[5] = 6   # opcode low
+    header[0] = 10
+    header[1] = 0
+    header[2] = 0
+    header[3] = 1
+    header[4] = 0
+    header[5] = 6
     struct.pack_into('>I', header, 6, len(payload_bytes))
     packet = bytes(header) + payload_bytes
     
-    print(f"📤 Отправка handshake (opcode=6), размер={len(packet)}")
+    print(f"📤 Отправка handshake, размер={len(packet)}")
     ssl_sock.send(packet)
     
     # Получаем ответ
@@ -87,14 +70,19 @@ def test_handshake():
     if payload_len > 0:
         payload = ssl_sock.recv(payload_len)
         print(f"📥 Получено {len(payload)} байт")
-        print(f"📥 Hex (первые 100): {payload.hex()[:100]}")
         
-        # Перебираем смещения
-        result = brute_force_decompress(payload)
-        if result:
-            print("\n✅ Успешно распаковано!")
-        else:
-            print("\n❌ Не удалось распаковать ни с одним смещением")
+        # Сохраняем payload
+        with open("handshake_response.bin", "wb") as f:
+            f.write(payload)
+        print("📁 Сохранён в handshake_response.bin")
+        
+        # Пробуем распарсить как MessagePack
+        try:
+            data = msgpack.unpackb(payload, raw=False)
+            print(f"📥 Распаковано (MessagePack): {data}")
+        except Exception as e:
+            print(f"❌ Ошибка распаковки MessagePack: {e}")
+            print(f"Первые 50 байт: {payload[:50].hex()}")
     
     ssl_sock.close()
 
