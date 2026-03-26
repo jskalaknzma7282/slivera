@@ -5,6 +5,16 @@ import msgpack
 import uuid
 import random
 
+def try_unpack(data, offset):
+    """Пробует распаковать MessagePack с указанным смещением"""
+    try:
+        result = msgpack.unpackb(data[offset:], raw=False)
+        print(f"✅ Смещение {offset}: успешно!")
+        print(f"   Распаковано: {result}")
+        return result
+    except Exception as e:
+        return None
+
 def test_handshake():
     print("🔌 Подключение к api.oneme.ru:443...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -70,19 +80,20 @@ def test_handshake():
     if payload_len > 0:
         payload = ssl_sock.recv(payload_len)
         print(f"📥 Получено {len(payload)} байт")
+        print(f"📥 Hex (первые 100): {payload.hex()[:100]}")
         
-        # Сохраняем payload
-        with open("handshake_response.bin", "wb") as f:
-            f.write(payload)
-        print("📁 Сохранён в handshake_response.bin")
+        # Перебираем смещения от 0 до 20
+        print("\n🔍 Перебор смещений для MessagePack...")
+        found = False
+        for offset in range(0, min(20, len(payload))):
+            result = try_unpack(payload, offset)
+            if result:
+                found = True
+                print(f"\n✅ Найдено рабочее смещение: {offset}")
+                break
         
-        # Пробуем распарсить как MessagePack
-        try:
-            data = msgpack.unpackb(payload, raw=False)
-            print(f"📥 Распаковано (MessagePack): {data}")
-        except Exception as e:
-            print(f"❌ Ошибка распаковки MessagePack: {e}")
-            print(f"Первые 50 байт: {payload[:50].hex()}")
+        if not found:
+            print("\n❌ Не найдено смещение, которое даёт валидный MessagePack")
     
     ssl_sock.close()
 
