@@ -1,4 +1,3 @@
-# max_websocket_client.py
 import asyncio
 import websockets
 import json
@@ -7,7 +6,7 @@ import random
 import qrcode
 import io
 from typing import Optional, Dict
- 
+
 class MaxWebSocketClient:
     def __init__(self):
         self.websocket = None
@@ -37,7 +36,17 @@ class MaxWebSocketClient:
         """Подключается к WebSocket Max"""
         uri = "wss://ws-api.oneme.ru/websocket"
         print(f"🔌 Подключение к {uri}...")
-        self.websocket = await websockets.connect(uri)
+        
+        # Заголовки как в браузере
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Origin": "https://web.max.ru"
+        }
+        
+        self.websocket = await websockets.connect(
+            uri,
+            extra_headers=headers
+        )
         print("✅ WebSocket подключён")
         
         # Отправляем handshake (opcode 6)
@@ -64,10 +73,8 @@ class MaxWebSocketClient:
         """Запрашивает QR-код и возвращает URL"""
         print("📱 Запрос QR-кода...")
         
-        # Отправляем запрос QR (opcode 7 или другой — нужно уточнить)
-        # В pymax это было через _request_qr_login
         payload = {}
-        await self._send_message(7, payload)  # предположительно opcode 7 для QR
+        await self._send_message(7, payload)
         
         response = await self._recv_message()
         print(f"📥 Ответ QR: {response}")
@@ -78,26 +85,6 @@ class MaxWebSocketClient:
                 return qr_link
         
         raise Exception("Не удалось получить QR-код")
-    
-    async def wait_for_login(self, track_id: str) -> bool:
-        """Ожидает сканирования QR-кода"""
-        print("⏳ Ожидание сканирования QR...")
-        
-        while True:
-            payload = {"trackId": track_id}
-            await self._send_message(8, payload)  # опрос статуса
-            response = await self._recv_message()
-            
-            if response and response.get('payload'):
-                status = response['payload'].get('status')
-                if status and status.get('loginAvailable'):
-                    print("✅ QR отсканирован!")
-                    return True
-                elif status and status.get('expired'):
-                    print("❌ QR истёк")
-                    return False
-            
-            await asyncio.sleep(2)
     
     async def _send_message(self, opcode: int, payload: Dict):
         self.seq += 1
