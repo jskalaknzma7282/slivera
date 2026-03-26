@@ -4,6 +4,7 @@ import struct
 import msgpack
 import uuid
 import random
+import lz4.block
 from typing import Dict, Optional
 
 class MaxClient:
@@ -146,11 +147,28 @@ class MaxClient:
             if payload_len > 0:
                 payload = self.sock.recv(payload_len)
                 print(f"📥 Payload (hex первые 200): {payload.hex()[:200]}...")
+                
+                # Пробуем распаковать LZ4
                 try:
-                    data = msgpack.unpackb(payload, raw=False)
-                    print(f"📥 Распаковано: {data}")
+                    # Способ 1: прямой LZ4
+                    try:
+                        decompressed = lz4.block.decompress(payload)
+                        print(f"📥 LZ4 распаковано (прямое), размер: {len(decompressed)}")
+                        data = msgpack.unpackb(decompressed, raw=False)
+                        print(f"📥 Распаковано: {data}")
+                    except:
+                        # Способ 2: с 4-байтовым заголовком (как в нашем pack)
+                        try:
+                            uncompressed_size = struct.unpack('>I', payload[:4])[0]
+                            compressed = payload[4:]
+                            decompressed = lz4.block.decompress(compressed, uncompressed_size=uncompressed_size)
+                            print(f"📥 LZ4 (с заголовком) распаковано, размер: {len(decompressed)}")
+                            data = msgpack.unpackb(decompressed, raw=False)
+                            print(f"📥 Распаковано: {data}")
+                        except Exception as e:
+                            print(f"❌ LZ4 распаковка не удалась: {e}")
                 except Exception as e:
-                    print(f"❌ Ошибка распаковки: {e}")
+                    print(f"❌ Ошибка LZ4: {e}")
             
             self.sock.close()
             return True
