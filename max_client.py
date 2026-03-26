@@ -14,10 +14,11 @@ class MaxClient:
         self.user_agent = None
         self.mt_instance_id = None
         self.client_session_id = None
+        self.response_offset = 2  # Смещение для распаковки ответов (из handshake)
         self._load_device_preset()
         
     def _load_device_preset(self):
-        # Точный формат из Dart-кода Komet (_buildUserAgentPayload)
+        # Точный формат из Dart-кода Komet (успешный вариант)
         self.user_agent = {
             "deviceType": "ANDROID",
             "locale": "ru",
@@ -36,10 +37,8 @@ class MaxClient:
         self.client_session_id = random.randint(1, 100)
         
     def _pack_packet(self, ver: int, cmd: int, seq: int, opcode: int, payload: Dict) -> bytes:
-        """Формирует пакет по формату из Komet (_packPacket)"""
         payload_bytes = msgpack.packb(payload)
         
-        # Заголовок: ver(1) + cmd(2) + seq(1) + opcode(2) + len(4) = 10 байт
         header = bytearray(10)
         header[0] = ver
         header[1] = (cmd >> 8) & 0xFF
@@ -47,13 +46,12 @@ class MaxClient:
         header[3] = seq
         header[4] = (opcode >> 8) & 0xFF
         header[5] = opcode & 0xFF
-        # Длина payload (4 байта, big-endian)
         struct.pack_into('>I', header, 6, len(payload_bytes))
         
         return bytes(header) + payload_bytes
     
     def _unpack_packet(self, data: bytes) -> Optional[Dict]:
-        """Разбирает пакет по формату из Komet"""
+        """Разбирает пакет, пропуская первые response_offset байт"""
         if len(data) < 10:
             return None
         
@@ -67,7 +65,16 @@ class MaxClient:
             return None
         
         payload_bytes = data[10:10 + payload_len]
-        payload = msgpack.unpackb(payload_bytes, raw=False)
+        
+        # Пропускаем response_offset байт при распаковке
+        try:
+            payload = msgpack.unpackb(payload_bytes[self.response_offset:], raw=False)
+        except:
+            # Если не получилось, пробуем без смещения
+            try:
+                payload = msgpack.unpackb(payload_bytes, raw=False)
+            except:
+                return None
         
         return {
             "ver": ver,
@@ -103,7 +110,7 @@ class MaxClient:
         packet = self._pack_packet(10, 0, self.seq, 6, handshake_payload)
         self.sock.send(packet)
         
-        # Ждём ответ на handshake
+        # Ждём ответ
         print("📥 Ожидание ответа...")
         response = self._recv_packet()
         print(f"📥 Ответ: {response}")
