@@ -4,21 +4,23 @@ import struct
 import msgpack
 import uuid
 import random
+import socks  # pip install pysocks
 from typing import Optional, Dict, Any
 
 class MaxClient:
-    def __init__(self):
+    def __init__(self, proxy_host=None, proxy_port=None):
         self.sock = None
         self.seq = 0
         self.device_id = None
         self.user_agent = None
         self.mt_instance_id = None
         self.client_session_id = None
-        self.response_offset = 2  # Смещение для распаковки ответов (из handshake)
+        self.response_offset = 2
+        self.proxy_host = proxy_host
+        self.proxy_port = proxy_port
         self._load_device_preset()
         
     def _load_device_preset(self):
-        # Точный формат из Dart-кода Komet (успешный вариант)
         self.user_agent = {
             "deviceType": "ANDROID",
             "locale": "ru",
@@ -51,7 +53,6 @@ class MaxClient:
         return bytes(header) + payload_bytes
     
     def _unpack_packet(self, data: bytes) -> Optional[Dict]:
-        """Разбирает пакет, пропуская первые response_offset байт"""
         if len(data) < 10:
             return None
         
@@ -66,11 +67,9 @@ class MaxClient:
         
         payload_bytes = data[10:10 + payload_len]
         
-        # Пропускаем response_offset байт при распаковке
         try:
             payload = msgpack.unpackb(payload_bytes[self.response_offset:], raw=False)
         except:
-            # Если не получилось, пробуем без смещения
             try:
                 payload = msgpack.unpackb(payload_bytes, raw=False)
             except:
@@ -84,45 +83,64 @@ class MaxClient:
             "payload": payload
         }
     
-    def connect(self):
-        """Подключается к серверу Max"""
-        print("🔌 Подключение к api.oneme.ru:443...")
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(30)
-        sock.connect(('api.oneme.ru', 443))
-        
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        self.sock = context.wrap_socket(sock, server_hostname='api.oneme.ru')
-        print("✅ TLS подключён")
-        
-        # Отправляем handshake (opcode 6)
-        handshake_payload = {
-            "mt_instanceid": self.mt_instance_id,
-            "clientSessionId": self.client_session_id,
-            "deviceId": self.device_id,
-            "userAgent": self.user_agent
-        }
-        
-        print(f"📤 Отправка handshake (opcode=6)")
-        self.seq = (self.seq + 1) % 256
-        packet = self._pack_packet(10, 0, self.seq, 6, handshake_payload)
-        self.sock.send(packet)
-        
-        # Ждём ответ
-        print("📥 Ожидание ответа...")
-        response = self._recv_packet()
-        print(f"📥 Ответ: {response}")
-        
-        if response and response.get('opcode') == 6 and response.get('cmd') == 0x100:
-            print("✅ Handshake успешен")
-        else:
-            raise Exception(f"Handshake failed: {response}")
+    def connect(self, retries=3):
+        for attempt in range(retries):
+            try:
+                print(f"🔌 Попытка {attempt+1}/{retries}...")
+                
+                # Создаём сокет через прокси или напрямую
+                if self.proxy_host and self.proxy_port:
+                    print(f"   Используем прокси {self.proxy_host}:{self.proxy_port}")
+                    sock = socks.socksocket()
+                    sock.set_proxy(socks.SOCKS5, self.proxy_host, self.proxy_port)
+                else:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                
+                sock.settimeout(15)
+                sock.connect(('api.oneme.ru', 443))
+                
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                self.sock = context.wrap_socket(sock, server_hostname='api.oneme.ru')
+                print("✅ TLS подключён")
+                
+                # Handshake
+                handshake_payload = {
+                    "mt_instanceid": self.mt_instance_id,
+                    "clientSessionId": self.client_session_id,
+                    "deviceId": self.device_id,
+                    "userAgent": self.user_agent
+                }
+                
+                self.seq = (self.seq + 1) % 256
+                packet = self._pack_packet(10, 0, self.seq, 6, handshake_payload)
+                self.sock.send(packet)
+                print("📤 Handshake отправлен")
+                
+                # Ждём ответ
+                response = self._recv_packet()
+                if response:
+                    print(f"📥 Ответ: {response}")
+                    if response.get('opcode') == 6 and response.get('cmd') == 0x100:
+                        print("✅ Handshake успешен")
+                        return
+                    else:
+                        raise Exception(f"Неверный ответ: {response}")
+                else:
+                    raise Exception("Нет ответа")
+                    
+            except Exception as e:
+                print(f"❌ Ошибка: {e}")
+                if self.sock:
+                    self.sock.close()
+                if attempt == retries - 1:
+                    raise
+                print("⏳ Повтор через 2 секунды...")
+                import time
+                time.sleep(2)
     
     def _recv_packet(self) -> Optional[Dict]:
-        """Получает пакет от сервера"""
-        # Заголовок 10 байт
         header = self._recv_exact(10)
         if not header:
             return None
@@ -140,7 +158,7 @@ class MaxClient:
         return self._unpack_packet(full)
     
     def _recv_exact(self, n: int) -> Optional[bytes]:
-        """Читает ровно n байт"""
+        self.sock.settimeout(10)
         data = b''
         while len(data) < n:
             chunk = self.sock.recv(n - len(data))
@@ -150,7 +168,6 @@ class MaxClient:
         return data
     
     def request_code(self, phone: str) -> str:
-        """Запрашивает SMS-код (opcode 17)"""
         print(f"\n📱 Запрос кода для {phone}")
         payload = {
             "phone": phone,
@@ -172,7 +189,6 @@ class MaxClient:
         raise Exception("Не удалось получить токен для кода")
     
     def verify_code(self, token: str, code: str) -> Dict:
-        """Подтверждает код (opcode 18)"""
         print(f"\n🔐 Подтверждение кода: {code}")
         payload = {
             "token": token,
@@ -191,7 +207,6 @@ class MaxClient:
         raise Exception("Не удалось подтвердить код")
     
     def register(self, reg_token: str, first_name: str = "User", last_name: str = "Komet") -> str:
-        """Завершает регистрацию (opcode 23)"""
         print(f"\n📝 Завершение регистрации")
         payload = {
             "lastName": last_name,
