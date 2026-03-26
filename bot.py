@@ -6,6 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import web
 
 from max_client import MaxClient
 
@@ -13,12 +14,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не найден")
-
-# Только SOCKS5 прокси (рабочие)
-SOCKS5_PROXIES = [
-    ("121.126.185.63", 25152),
-    ("103.84.95.54", 7890),
-]
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -44,7 +39,7 @@ async def get_phone(msg: types.Message, state: FSMContext):
     await msg.answer(f"📱 Отправляю запрос на номер {phone}...")
     
     try:
-        client = MaxClient(proxy_list=SOCKS5_PROXIES)
+        client = MaxClient()
         client.connect()
         token = client.request_code(phone)
         
@@ -101,10 +96,28 @@ async def get_code(msg: types.Message, state: FSMContext):
         del temp_data[user_id]
         await state.clear()
 
+# Веб-сервер для пинга (чтобы Render не уснул)
+async def health(request):
+    return web.Response(text="OK")
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get('/', health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    print("🌐 Веб-сервер запущен на порту 8080")
+    await asyncio.Future()  # вечно
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     print("🚀 Бот запущен")
-    await dp.start_polling(bot)
+    
+    await asyncio.gather(
+        dp.start_polling(bot),
+        start_web()
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
