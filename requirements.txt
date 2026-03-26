@@ -1,4 +1,4 @@
 aiogram==3.17.0
-vkmax==0.1.0
+vkmax
 aiohttp==3.11.11
 python-dotenv==1.0.1
