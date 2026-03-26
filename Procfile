@@ -1,1 +1,1 @@
-worker: python test_connect.py
+worker: python test_variants.py
