@@ -1,5 +1,5 @@
 import asyncio
-import osгововлв
+import os
 import traceback
 from typing import Dict
 
