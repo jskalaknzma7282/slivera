@@ -1,3 +1,5 @@
 aiogram
 maxapi-python
+requests
 python-dotenv
+aiohttp>=3.12.15
