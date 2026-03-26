@@ -2,4 +2,4 @@ msgpack
 lz4
 aiogram==3.17.0
 pysocks
-python-dotenv==1.0.1
+aiohttp
