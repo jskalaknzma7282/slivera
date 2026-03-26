@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import traceback
 from typing import Dict
 
@@ -10,8 +11,51 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 
-from max_api import MaxClient
-from max_api.types import UserAgent
+# ========== ПРОВЕРКА БИБЛИОТЕКИ max-private-api ==========
+print("=" * 60)
+print("🔍 ПРОВЕРКА БИБЛИОТЕКИ max-private-api")
+print("=" * 60)
+
+try:
+    from max_private_api import MaxClient
+    print("✅ Библиотека max_private_api найдена и импортирована")
+except ImportError as e:
+    print(f"❌ Библиотека max_private_api не установлена: {e}")
+    print("❌ Бот не может работать без этой библиотеки")
+    sys.exit(1)
+
+# Выводим все методы MaxClient
+print("\n📋 Методы MaxClient:")
+methods = [m for m in dir(MaxClient) if not m.startswith('_')]
+for method in methods:
+    print(f"  - {method}")
+
+# Проверяем наличие ключевых методов
+print("\n🔑 Ключевые методы:")
+key_methods = ['login', 'auth', 'send_code', 'confirm_code', 'verify_code', 'submit_code', 'run_polling', 'on']
+for km in key_methods:
+    if km in methods:
+        print(f"  ✅ {km} - есть")
+    else:
+        print(f"  ❌ {km} - нет")
+
+# Пробуем создать экземпляр и посмотреть его атрибуты
+try:
+    client_test = MaxClient()
+    print("\n📦 Атрибуты экземпляра MaxClient (первые 20):")
+    attrs = [a for a in dir(client_test) if not a.startswith('_')]
+    for attr in attrs[:20]:
+        print(f"  - {attr}")
+    if len(attrs) > 20:
+        print(f"  ... и ещё {len(attrs) - 20} атрибутов")
+except Exception as e:
+    print(f"\n❌ Ошибка при создании MaxClient: {e}")
+
+print("\n" + "=" * 60)
+print("✅ ПРОВЕРКА ЗАВЕРШЕНА, ЗАПУСКАЮ БОТА")
+print("=" * 60)
+print("")
+# ========== КОНЕЦ ПРОВЕРКИ ==========
 
 # ========== ЗАГРУЗКА ПЕРЕМЕННЫХ ==========
 load_dotenv()
@@ -61,56 +105,118 @@ async def process_phone(message: types.Message, state: FSMContext):
     await message.answer(f"📱 Отправляю запрос на номер {phone}...")
     
     try:
-        # Создаём клиент
-        client = MaxClient(
-            phone=phone,
-            user_agent=UserAgent(
-                device_type="DESKTOP",
-                app_version="25.12.13"
-            )
-        )
-        
-        # Запускаем авторизацию в фоне
-        code_event = asyncio.Event()
-        user_code = None
-        
-        # Подписываемся на событие запроса кода
-        @client.on_code_request
-        async def on_code_request():
-            nonlocal user_code
-            await message.answer("📲 Код отправлен! Введите код из SMS:")
-            await state.set_state(RegStates.waiting_code)
-            await code_event.wait()
-            return user_code
+        # Создаём клиент Max
+        client = MaxClient()
         
         # Сохраняем клиент
         temp_sessions[user_id] = {
             "client": client,
-            "phone": phone,
-            "code_event": code_event,
-            "code": None
+            "phone": phone
         }
         
-        # Запускаем клиент
-        asyncio.create_task(client.start())
+        # Запускаем авторизацию в фоне
+        async def auth_task():
+            try:
+                # Проверяем, какой метод доступен
+                if hasattr(client, 'login'):
+                    # Если есть login, вызываем его
+                    print(f"[DEBUG] Вызываю client.login(phone={phone})")
+                    await client.login(phone=phone)
+                elif hasattr(client, 'auth'):
+                    print(f"[DEBUG] Вызываю client.auth(phone={phone})")
+                    await client.auth(phone=phone)
+                elif hasattr(client, 'send_code'):
+                    print(f"[DEBUG] Вызываю client.send_code(phone={phone})")
+                    await client.send_code(phone=phone)
+                else:
+                    raise Exception("Нет метода для отправки номера")
+                
+                # Создаём событие для ожидания кода
+                code_event = asyncio.Event()
+                temp_sessions[user_id]["code_event"] = code_event
+                
+                await message.answer("📲 Код отправлен! Введите код из SMS:")
+                await state.set_state(RegStates.waiting_code)
+                
+                # Ждём код от пользователя
+                await code_event.wait()
+                
+                # Получаем код
+                code = temp_sessions[user_id].get("code")
+                if not code:
+                    return
+                
+                # Передаём код в библиотеку
+                if hasattr(client, 'confirm_code'):
+                    print(f"[DEBUG] Вызываю client.confirm_code({code})")
+                    await client.confirm_code(code)
+                elif hasattr(client, 'verify_code'):
+                    print(f"[DEBUG] Вызываю client.verify_code({code})")
+                    await client.verify_code(code)
+                elif hasattr(client, 'submit_code'):
+                    print(f"[DEBUG] Вызываю client.submit_code({code})")
+                    await client.submit_code(code)
+                else:
+                    # Если нет метода для кода, пробуем установить напрямую
+                    print(f"[DEBUG] Нет метода для кода, пробую client.code = {code}")
+                    client.code = code
+                
+                # Ждём завершения авторизации
+                await asyncio.sleep(3)
+                
+                # Проверяем, авторизован ли клиент
+                is_auth = False
+                token = None
+                
+                if hasattr(client, 'is_authorized'):
+                    is_auth = client.is_authorized
+                elif hasattr(client, 'authorized'):
+                    is_auth = client.authorized
+                elif hasattr(client, 'me'):
+                    is_auth = client.me is not None
+                
+                if hasattr(client, 'token'):
+                    token = client.token
+                elif hasattr(client, 'access_token'):
+                    token = client.access_token
+                
+                if is_auth or token:
+                    await message.answer(
+                        f"✅ **Регистрация в Max успешна!**\n\n"
+                        f"📱 Номер: `{phone}`\n"
+                        f"🔑 Токен: `{str(token)[:30]}...`\n\n"
+                        f"⚠️ Сохраните токен.",
+                        parse_mode="Markdown"
+                    )
+                    print(f"✅ Токен: {token}")
+                else:
+                    await message.answer(
+                        "❌ **Неверный код!**\n\n"
+                        "Попробуйте ещё раз. Если код не пришёл, запросите новый через /start",
+                        parse_mode="Markdown"
+                    )
+                    # Даём попробовать снова
+                    temp_sessions[user_id]["code_event"] = asyncio.Event()
+                    await state.set_state(RegStates.waiting_code)
+                    return
+                    
+            except Exception as e:
+                print(f"[ERROR] auth_task: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                await message.answer(f"❌ Ошибка: {e}\nПопробуйте /start")
+            finally:
+                # Очищаем сессию при успехе или ошибке
+                if user_id in temp_sessions:
+                    del temp_sessions[user_id]
+                await state.clear()
+        
+        # Запускаем задачу
+        asyncio.create_task(auth_task())
         
     except Exception as e:
-        error_msg = str(e).lower()
         print(f"[ERROR] {type(e).__name__}: {e}")
         traceback.print_exc()
-        
-        if "already registered" in error_msg or "exists" in error_msg:
-            await message.answer(
-                "❌ **Этот номер уже зарегистрирован в Max!**\n\n"
-                "Используйте другой номер или войдите в существующий аккаунт.",
-                parse_mode="Markdown"
-            )
-        else:
-            await message.answer(f"❌ Ошибка: {e}\nПопробуйте /start")
-        
-        if user_id in temp_sessions:
-            del temp_sessions[user_id]
-        await state.clear()
+        await message.answer(f"❌ Ошибка: {e}\nПопробуйте /start")
 
 # ========== ОБРАБОТКА КОДА ==========
 @dp.message(RegStates.waiting_code)
@@ -126,81 +232,22 @@ async def process_code(message: types.Message, state: FSMContext):
         return
     
     session = temp_sessions[user_id]
-    client = session["client"]
-    phone = session["phone"]
-    code_event = session["code_event"]
+    code_event = session.get("code_event")
     
-    # Передаём код
-    session["code"] = code
-    code_event.set()
-    
-    await message.answer("🔐 Проверяю код...")
-    
-    try:
-        # Ждём завершения авторизации
-        await asyncio.sleep(5)
-        
-        if client.is_authorized:
-            token = client.token if hasattr(client, 'token') else None
-            
-            if token:
-                await message.answer(
-                    f"✅ **Регистрация в Max успешна!**\n\n"
-                    f"📱 Номер: `{phone}`\n"
-                    f"🔑 Токен: `{token[:30]}...`\n\n"
-                    f"⚠️ Сохраните токен.",
-                    parse_mode="Markdown"
-                )
-                print(f"\n{'='*50}")
-                print(f"✅ ПОЛЬЗОВАТЕЛЬ")
-                print(f"📱 Номер: {phone}")
-                print(f"🔑 Токен: {token}")
-                print(f"{'='*50}\n")
-            else:
-                await message.answer(
-                    f"✅ **Авторизация успешна!**\n\n"
-                    f"📱 Номер: `{phone}`",
-                    parse_mode="Markdown"
-                )
-        else:
-            await message.answer(
-                "❌ **Неверный код!**\n\n"
-                "Попробуйте ещё раз. Если код не пришёл, запросите новый через /start",
-                parse_mode="Markdown"
-            )
-            # Сбрасываем событие для нового кода
-            session["code"] = None
-            code_event.clear()
-            await state.set_state(RegStates.waiting_code)
-            return
-        
+    if code_event:
+        session["code"] = code
+        code_event.set()
+        await message.answer("🔐 Код принят, завершаю регистрацию...")
+    else:
+        await message.answer("❌ Ошибка: не найден обработчик кода. Начните заново с /start")
         del temp_sessions[user_id]
         await state.clear()
-        
-    except Exception as e:
-        print(f"[ERROR] {type(e).__name__}: {e}")
-        traceback.print_exc()
-        
-        error_msg = str(e).lower()
-        if "invalid" in error_msg or "wrong" in error_msg:
-            await message.answer(
-                "❌ **Неверный код!**\n\n"
-                "Попробуйте ещё раз.",
-                parse_mode="Markdown"
-            )
-            session["code"] = None
-            code_event.clear()
-            await state.set_state(RegStates.waiting_code)
-        else:
-            await message.answer(f"❌ Ошибка: {e}\nПопробуйте /start")
-            del temp_sessions[user_id]
-            await state.clear()
 
 # ========== ЗАПУСК ==========
 async def main():
-    print("=" * 50)
-    print("🚀 Бот запущен (max-api)")
-    print("=" * 50)
+    print("=" * 60)
+    print("🚀 Бот запущен")
+    print("=" * 60)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
