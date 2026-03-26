@@ -4,7 +4,6 @@ import struct
 import msgpack
 import uuid
 import random
-import itertools
 from typing import Dict, Optional
 
 class MaxClient:
@@ -47,6 +46,9 @@ class MaxClient:
         # Добавляем/убираем поля
         variants = []
         
+        # Вариант 0: все поля
+        variants.append(base_ua.copy())
+        
         # Вариант 1: без pushDeviceType
         ua1 = base_ua.copy()
         del ua1["pushDeviceType"]
@@ -62,13 +64,10 @@ class MaxClient:
         del ua3["buildNumber"]
         variants.append(ua3)
         
-        # Вариант 4: все поля
-        variants.append(base_ua.copy())
-        
-        # Вариант 5: с дополнительными полями
-        ua5 = base_ua.copy()
-        ua5["clientVersion"] = "25.21.3"
-        variants.append(ua5)
+        # Вариант 4: все поля + clientVersion
+        ua4 = base_ua.copy()
+        ua4["clientVersion"] = "25.21.3"
+        variants.append(ua4)
         
         # Выбираем по индексу
         if self.user_agent_variant < len(variants):
@@ -104,8 +103,8 @@ class MaxClient:
         sock.settimeout(10)
         try:
             sock.connect(('api.oneme.ru', 443))
-        except:
-            print(f"❌ TCP ошибка")
+        except Exception as e:
+            print(f"❌ TCP ошибка: {e}")
             return False
         
         context = ssl.create_default_context()
@@ -113,8 +112,8 @@ class MaxClient:
         context.verify_mode = ssl.CERT_NONE
         try:
             self.sock = context.wrap_socket(sock, server_hostname='api.oneme.ru')
-        except:
-            print(f"❌ TLS ошибка")
+        except Exception as e:
+            print(f"❌ TLS ошибка: {e}")
             return False
         
         handshake_payload = {
@@ -129,34 +128,46 @@ class MaxClient:
         
         try:
             self.sock.send(packet)
-        except:
-            print(f"❌ Ошибка отправки")
+        except Exception as e:
+            print(f"❌ Ошибка отправки: {e}")
             self.sock.close()
             return False
         
         try:
             header = self.sock.recv(10)
-            if header:
-                print(f"✅ Ответ получен! {header.hex()}")
+            if not header:
+                print("❌ Нет заголовка")
                 self.sock.close()
-                return True
-        except:
-            pass
-        
-        print(f"❌ Нет ответа")
-        self.sock.close()
-        return False
+                return False
+            
+            payload_len = (header[6] << 24) | (header[7] << 16) | (header[8] << 8) | header[9]
+            print(f"📥 Заголовок: {header.hex()}, payload_len={payload_len}")
+            
+            if payload_len > 0:
+                payload = self.sock.recv(payload_len)
+                print(f"📥 Payload (первые 200 байт): {payload.hex()[:200]}...")
+                try:
+                    data = msgpack.unpackb(payload, raw=False)
+                    print(f"📥 Распаковано: {data}")
+                except Exception as e:
+                    print(f"❌ Не удалось распаковать payload: {e}")
+            
+            self.sock.close()
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка приёма: {e}")
+            self.sock.close()
+            return False
 
 def test_all_variants():
     # Пробуем разные варианты
-    for variant in range(8):  # 8 вариантов user_agent
+    for variant in range(5):  # 5 вариантов user_agent
         for ver in [10, 11, 12]:
-            for compress in [False, True]:
-                client = MaxClient(user_agent_variant=variant)
-                success = client.connect(ver=ver, compress=compress)
-                if success:
-                    print(f"\n✅ НАЙДЕНО! Вариант: variant={variant}, ver={ver}, compress={compress}")
-                    return
+            client = MaxClient(user_agent_variant=variant)
+            success = client.connect(ver=ver, compress=False)
+            if success:
+                print(f"\n✅ НАЙДЕНО! Вариант: variant={variant}, ver={ver}")
+                return
         print(f"Вариант {variant} не сработал")
 
 if __name__ == "__main__":
