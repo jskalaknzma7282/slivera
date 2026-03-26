@@ -1,7 +1,8 @@
 import asyncio
 import os
+import json
 import traceback
-from typing import Dict
+from typing import Dict, Optional
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -10,36 +11,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 
-from vkmax.client import MaxClient
-
-# ========== ПАТЧ ДЛЯ vkmax ==========
-print("🔧 Применяю патч для vkmax...")
-
-# Сохраняем оригинальный метод
-_original_send_code = MaxClient.send_code
-
-async def patched_send_code(self, phone: str):
-    """Исправленная версия send_code"""
-    # Отправляем запрос через websocket
-    request = {
-        "type": "auth",
-        "payload": {
-            "phone": phone
-        }
-    }
-    
-    # Используем внутренний websocket клиент
-    await self._ws.send_json(request)
-    response = await self._ws.recv_json()
-    
-    # Возвращаем весь payload (там будет hash)
-    if "payload" in response:
-        return response["payload"]
-    return response
-
-MaxClient.send_code = patched_send_code
-print("✅ vkmax.send_code исправлен")
-# ====================================
+import websockets
+import ssl
 
 # ========== ЗАГРУЗКА ПЕРЕМЕННЫХ ==========
 load_dotenv()
@@ -60,10 +33,79 @@ class RegStates(StatesGroup):
 # ========== ВРЕМЕННОЕ ХРАНИЛИЩЕ ==========
 temp_sessions: Dict[int, dict] = {}
 
+# ========== КЛАСС ДЛЯ РАБОТЫ С MAX ==========
+class MaxAuth:
+    """Простой клиент для авторизации в Max через WebSocket"""
+    
+    def __init__(self):
+        self.websocket = None
+        self.device_id = None
+    
+    async def connect(self):
+        """Подключается к WebSocket Max"""
+        uri = "wss://ws-api.oneme.ru/websocket"
+        
+        # Заголовки как в браузере/приложении
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+            "Origin": "https://web.max.ru"
+        }
+        
+        self.websocket = await websockets.connect(
+            uri, 
+            extra_headers=headers,
+            ssl=ssl.create_default_context()
+        )
+        print("[MAX] WebSocket подключён")
+        return self
+    
+    async def send_code(self, phone: str) -> dict:
+        """Отправляет номер, возвращает hash"""
+        request = {
+            "type": "auth",
+            "payload": {"phone": phone}
+        }
+        
+        await self.websocket.send(json.dumps(request))
+        response = await self.websocket.recv()
+        data = json.loads(response)
+        
+        print(f"[MAX] Отправка номера, ответ: {data}")
+        
+        if "payload" not in data:
+            raise Exception(f"Неожиданный ответ: {data}")
+        
+        return data["payload"]  # здесь будет hash
+    
+    async def verify_code(self, auth_payload: dict, code: str) -> dict:
+        """Подтверждает код, возвращает токен"""
+        request = {
+            "type": "auth",
+            "payload": {
+                "hash": auth_payload.get("hash"),
+                "code": code
+            }
+        }
+        
+        await self.websocket.send(json.dumps(request))
+        response = await self.websocket.recv()
+        data = json.loads(response)
+        
+        print(f"[MAX] Подтверждение кода, ответ: {data}")
+        
+        if "payload" not in data:
+            raise Exception(f"Неожиданный ответ: {data}")
+        
+        return data["payload"]
+    
+    async def close(self):
+        """Закрывает соединение"""
+        if self.websocket:
+            await self.websocket.close()
+
 # ========== КОМАНДА /START ==========
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    print(f"[DEBUG] /start от пользователя {message.from_user.id}")
     await message.answer(
         "👋 Привет! Я помогу зарегистрироваться в Max.\n\n"
         "Введите ваш номер телефона в формате:\n"
@@ -78,8 +120,7 @@ async def process_phone(message: types.Message, state: FSMContext):
     phone = message.text.strip()
     user_id = message.from_user.id
     
-    print(f"[DEBUG] Пользователь {user_id} ввёл номер: {phone}")
-    
+    # Проверка формата
     if not phone.startswith("+") or not phone[1:].isdigit():
         await message.answer("❌ Неверный формат. Пример: `+79123456789`", parse_mode="Markdown")
         return
@@ -87,16 +128,16 @@ async def process_phone(message: types.Message, state: FSMContext):
     await message.answer(f"📱 Отправляю запрос на номер {phone}...")
     
     try:
-        client = MaxClient()
-        await client.connect()
+        # Создаём клиент и подключаемся
+        max_auth = MaxAuth()
+        await max_auth.connect()
         
-        # send_code теперь возвращает payload (с hash)
-        auth_payload = await client.send_code(phone)
-        print(f"[DEBUG] auth_payload: {auth_payload}")
+        # Отправляем номер, получаем hash
+        auth_payload = await max_auth.send_code(phone)
         
         # Сохраняем сессию
         temp_sessions[user_id] = {
-            "client": client,
+            "max_auth": max_auth,
             "auth_payload": auth_payload,
             "phone": phone
         }
@@ -105,7 +146,7 @@ async def process_phone(message: types.Message, state: FSMContext):
         await state.set_state(RegStates.waiting_code)
         
     except Exception as e:
-        print(f"[DEBUG] Ошибка: {type(e).__name__}: {e}")
+        print(f"[ERROR] {type(e).__name__}: {e}")
         traceback.print_exc()
         await message.answer(f"❌ Ошибка: {e}\nПопробуйте /start")
 
@@ -115,62 +156,68 @@ async def process_code(message: types.Message, state: FSMContext):
     code = message.text.strip()
     user_id = message.from_user.id
     
+    # Проверяем сессию
     if user_id not in temp_sessions:
         await message.answer("❌ Сессия истекла. Начните заново с /start")
         await state.clear()
         return
     
     session = temp_sessions[user_id]
-    client = session["client"]
+    max_auth = session["max_auth"]
     auth_payload = session["auth_payload"]
     phone = session["phone"]
     
     await message.answer("🔐 Подтверждаю код...")
     
     try:
-        # Используем sign_in
-        account_data = await client.sign_in(auth_payload, code)
-        print(f"[DEBUG] account_data: {account_data}")
+        # Подтверждаем код, получаем токен
+        result = await max_auth.verify_code(auth_payload, code)
         
-        # Ищем токен
+        # Извлекаем токен
         login_token = None
-        device_id = client.device_id
-        
-        if "payload" in account_data and "tokenAttrs" in account_data["payload"]:
-            login_token = account_data["payload"]["tokenAttrs"]["LOGIN"]["token"]
-        elif "token" in account_data:
-            login_token = account_data["token"]
-        elif "data" in account_data and "token" in account_data["data"]:
-            login_token = account_data["data"]["token"]
+        if "tokenAttrs" in result and "LOGIN" in result["tokenAttrs"]:
+            login_token = result["tokenAttrs"]["LOGIN"]["token"]
+        elif "token" in result:
+            login_token = result["token"]
         
         if not login_token:
-            await message.answer(f"❌ Не удалось получить токен. Ответ: {str(account_data)[:200]}")
+            await message.answer(f"❌ Не удалось получить токен. Ответ: {str(result)[:200]}")
             return
         
+        # Закрываем соединение
+        await max_auth.close()
+        
+        # Успех!
         await message.answer(
-            f"✅ **Регистрация успешна!**\n\n"
+            f"✅ **Регистрация в Max успешна!**\n\n"
             f"📱 Номер: `{phone}`\n"
-            f"🔑 Токен: `{login_token[:20]}...`\n"
-            f"🆔 Device ID: `{device_id}`",
+            f"🔑 Токен: `{login_token[:30]}...`\n\n"
+            f"⚠️ Сохраните этот токен для будущих входов.",
             parse_mode="Markdown"
         )
         
-        print(f"[DEBUG] ========== ПОЛНЫЙ ТОКЕН ==========")
-        print(f"[DEBUG] Token: {login_token}")
-        print(f"[DEBUG] Device ID: {device_id}")
-        print(f"[DEBUG] ==================================")
+        # Выводим полный токен в консоль (логи Railway)
+        print(f"\n{'='*50}")
+        print(f"✅ НОВЫЙ ПОЛЬЗОВАТЕЛЬ ЗАРЕГИСТРИРОВАН")
+        print(f"📱 Номер: {phone}")
+        print(f"🔑 Токен: {login_token}")
+        print(f"🆔 User ID: {user_id}")
+        print(f"{'='*50}\n")
         
+        # Очищаем сессию
         del temp_sessions[user_id]
         await state.clear()
         
     except Exception as e:
-        print(f"[DEBUG] Ошибка: {type(e).__name__}: {e}")
+        print(f"[ERROR] {type(e).__name__}: {e}")
         traceback.print_exc()
         await message.answer(f"❌ Ошибка: {e}\nПопробуйте /start")
 
 # ========== ЗАПУСК ==========
 async def main():
-    print("🚀 Бот запущен...")
+    print("=" * 50)
+    print("🚀 Бот запущен")
+    print("=" * 50)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
