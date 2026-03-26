@@ -1,1 +1,1 @@
-worker: python test_auth.py
+worker: python bot.py
