@@ -1,1 +1,1 @@
-worker: python test_variants.py
+worker: python test_decompress.py
