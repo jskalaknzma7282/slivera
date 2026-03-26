@@ -12,10 +12,9 @@ async def test_qr():
     
     ua = UserAgentPayload(device_type="WEB", app_version="25.12.13")
     
-    # Для QR нужно передать пустую строку или заглушку
-    # Некоторые версии требуют номер, но для WEB он не используется
+    # Передаём любой валидный номер (для QR он не используется)
     client = MaxClient(
-        phone="",  # пустая строка вместо None
+        phone="+79123456789",
         work_dir="cache_qr_test",
         headers=ua
     )
