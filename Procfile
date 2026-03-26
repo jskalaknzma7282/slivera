@@ -1,1 +1,1 @@
-worker: python test_decompress.py
+worker: python test_auth.py
