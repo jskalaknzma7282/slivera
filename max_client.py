@@ -107,14 +107,24 @@ class MaxClient:
         sock.settimeout(30)
         sock.connect(('api.oneme.ru', 443))
         
-        # TLS
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         self.sock = context.wrap_socket(sock, server_hostname='api.oneme.ru')
         print("✅ TLS подключён")
         
-        # Handshake (opcode 6)
+        # 1. Отправляем ping (opcode 1)
+        ping_payload = {"interactive": True}
+        self.seq = (self.seq + 1) % 256
+        ping_packet = self._pack_packet(11, 0, self.seq, 1, ping_payload)
+        self.sock.send(ping_packet)
+        print("📤 Отправлен ping (opcode=1)")
+        
+        # Ждём ответ на ping
+        ping_response = self._recv_packet()
+        print(f"📥 Ответ на ping: {ping_response}")
+        
+        # 2. Отправляем handshake (opcode 6)
         handshake_payload = {
             "mt_instanceid": self.mt_instance_id,
             "clientSessionId": self.client_session_id,
@@ -125,12 +135,12 @@ class MaxClient:
         print(f"📤 Handshake payload: {handshake_payload}")
         
         self.seq = (self.seq + 1) % 256
-        packet = self._pack_packet(10, 0, self.seq, 6, handshake_payload)
-        print(f"📤 Пакет: {len(packet)} байт")
+        packet = self._pack_packet(11, 0, self.seq, 6, handshake_payload)
+        print(f"📤 Пакет handshake: {len(packet)} байт")
         self.sock.send(packet)
         
-        # Ждём ответ
-        print("📥 Ожидание ответа...")
+        # Ждём ответ на handshake
+        print("📥 Ожидание ответа на handshake...")
         response = self._recv_packet()
         print(f"📥 Ответ: {response}")
         
@@ -169,6 +179,72 @@ class MaxClient:
                 return None
             data += chunk
         return data
+    
+    def request_code(self, phone: str) -> str:
+        """Запрашивает SMS-код"""
+        print(f"\n📱 Запрос кода для {phone}")
+        payload = {
+            "phone": phone,
+            "type": "START_AUTH",
+            "language": "ru"
+        }
+        self.seq = (self.seq + 1) % 256
+        packet = self._pack_packet(11, 0, self.seq, 17, payload)
+        self.sock.send(packet)
+        
+        response = self._recv_packet()
+        print(f"📥 Ответ: {response}")
+        
+        if response and response.get('payload'):
+            token = response['payload'].get('token')
+            if token:
+                print(f"✅ Получен токен: {token}")
+                return token
+        raise Exception("Не удалось получить токен для кода")
+    
+    def verify_code(self, token: str, code: str) -> Dict:
+        """Подтверждает код"""
+        print(f"\n🔐 Подтверждение кода: {code}")
+        payload = {
+            "token": token,
+            "verifyCode": code,
+            "authTokenType": "CHECK_CODE"
+        }
+        self.seq = (self.seq + 1) % 256
+        packet = self._pack_packet(11, 0, self.seq, 18, payload)
+        self.sock.send(packet)
+        
+        response = self._recv_packet()
+        print(f"📥 Ответ: {response}")
+        
+        if response and response.get('payload'):
+            return response['payload']
+        raise Exception("Не удалось подтвердить код")
+    
+    def register(self, reg_token: str, first_name: str = "User", last_name: str = "Komet") -> str:
+        """Завершает регистрацию"""
+        print(f"\n📝 Завершение регистрации")
+        payload = {
+            "lastName": last_name,
+            "token": reg_token,
+            "firstName": first_name,
+            "tokenType": "REGISTER"
+        }
+        self.seq = (self.seq + 1) % 256
+        packet = self._pack_packet(11, 0, self.seq, 23, payload)
+        self.sock.send(packet)
+        
+        response = self._recv_packet()
+        print(f"📥 Ответ: {response}")
+        
+        if response and response.get('payload'):
+            token_attrs = response['payload'].get('tokenAttrs', {})
+            login_attrs = token_attrs.get('LOGIN', {})
+            token = login_attrs.get('token')
+            if token:
+                print(f"✅ Получен финальный токен: {token[:30]}...")
+                return token
+        raise Exception("Не удалось завершить регистрацию")
     
     def close(self):
         if self.sock:
