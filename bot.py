@@ -1,16 +1,20 @@
 import asyncio
 import os
-import requests
+import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from dotenv import load_dotenv
 
+from max_client import MaxClient
+
+load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GREEN_API_ID = os.getenv("GREEN_API_ID")
-GREEN_API_TOKEN = os.getenv("GREEN_API_TOKEN")
-GREEN_API_URL = os.getenv("GREEN_API_URL", "https://api.green-api.com")
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN не найден")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -19,11 +23,7 @@ class Form(StatesGroup):
     phone = State()
     code = State()
 
-def green_api(method, data=None):
-    url = f"{GREEN_API_URL}/waInstance{GREEN_API_ID}/{method}/{GREEN_API_TOKEN}"
-    headers = {"Content-Type": "application/json"}
-    r = requests.post(url, json=data, headers=headers) if data else requests.get(url, headers=headers)
-    return r.json() if r.status_code == 200 else {"error": r.text}
+temp_data = {}
 
 @dp.message(Command("start"))
 async def start(msg: types.Message, state: FSMContext):
@@ -36,30 +36,77 @@ async def get_phone(msg: types.Message, state: FSMContext):
     if not phone.startswith("+") or not phone[1:].isdigit():
         await msg.answer("Неверный формат. Пример: +79123456789")
         return
-    resp = green_api("startAuthorization", {"phone": phone})
-    if "error" in resp:
-        await msg.answer(f"Ошибка: {resp['error']}")
-        return
-    await state.update_data(phone=phone)
-    await msg.answer("Код отправлен. Введите 6-значный код из SMS")
-    await state.set_state(Form.code)
+    
+    await msg.answer(f"Отправляю запрос на номер {phone}...")
+    
+    try:
+        client = MaxClient()
+        client.connect()
+        token = client.request_code(phone)
+        
+        temp_data[msg.from_user.id] = {
+            "client": client,
+            "token": token,
+            "phone": phone
+        }
+        
+        await msg.answer("Код отправлен. Введите код из SMS")
+        await state.set_state(Form.code)
+    except Exception as e:
+        await msg.answer(f"Ошибка: {e}")
+        await state.clear()
 
 @dp.message(Form.code)
 async def get_code(msg: types.Message, state: FSMContext):
     code = msg.text.strip()
-    data = await state.get_data()
-    resp = green_api("sendAuthorizationCode", {"code": code})
-    if "error" in resp:
-        await msg.answer(f"Ошибка: {resp['error']}")
+    user_id = msg.from_user.id
+    
+    if user_id not in temp_data:
+        await msg.answer("Сессия истекла. Начните заново с /start")
+        await state.clear()
         return
-    token = resp.get("token")
-    if token:
-        await msg.answer(f"✅ Регистрация успешна!\nТокен: {token[:30]}...")
-    else:
-        await msg.answer("✅ Авторизация прошла успешно!")
-    await state.clear()
+    
+    data = temp_data[user_id]
+    client = data["client"]
+    token = data["token"]
+    phone = data["phone"]
+    
+    await msg.answer("Подтверждаю код...")
+    
+    try:
+        # Подтверждаем код
+        auth_data = client.verify_code(token, code)
+        
+        # Получаем регистрационный токен
+        reg_token = auth_data.get("tokenAttrs", {}).get("REGISTER", {}).get("token")
+        if not reg_token:
+            # Если уже есть аккаунт, получаем логин токен
+            login_token = auth_data.get("tokenAttrs", {}).get("LOGIN", {}).get("token")
+            if login_token:
+                await msg.answer(f"✅ Вход выполнен!\nТокен: {login_token[:30]}...")
+                client.close()
+                del temp_data[user_id]
+                await state.clear()
+                return
+            raise Exception("Не удалось получить токен")
+        
+        # Завершаем регистрацию
+        final_token = client.register(reg_token)
+        
+        await msg.answer(f"✅ Регистрация успешна!\nТокен: {final_token[:30]}...")
+        client.close()
+        del temp_data[user_id]
+        await state.clear()
+        
+    except Exception as e:
+        await msg.answer(f"Ошибка: {e}")
+        client.close()
+        del temp_data[user_id]
+        await state.clear()
 
 async def main():
+    logging.basicConfig(level=logging.INFO)
+    print("Бот запущен")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
