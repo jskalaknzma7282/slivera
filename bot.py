@@ -6,15 +6,17 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from dotenv import load_dotenv
 
 from max_client import MaxClient
 
-load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не найден")
+
+# Прокси из переменных окружения
+PROXY_HOST = os.getenv("PROXY_HOST", "103.84.95.54")
+PROXY_PORT = int(os.getenv("PROXY_PORT", "7890"))
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -40,7 +42,7 @@ async def get_phone(msg: types.Message, state: FSMContext):
     await msg.answer(f"📱 Отправляю запрос на номер {phone}...")
     
     try:
-        client = MaxClient()
+        client = MaxClient(proxy_host=PROXY_HOST, proxy_port=PROXY_PORT)
         client.connect()
         token = client.request_code(phone)
         
