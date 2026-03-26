@@ -1,4 +1,4 @@
 aiogram==3.17.0
 msgpack
-lz4==4.3.3
+lz4
 python-dotenv==1.0.1
