@@ -145,12 +145,12 @@ class MaxClient:
             
             if payload_len > 0:
                 payload = self.sock.recv(payload_len)
-                print(f"📥 Payload (первые 200 байт): {payload.hex()[:200]}...")
+                print(f"📥 Payload (hex первые 200): {payload.hex()[:200]}...")
                 try:
                     data = msgpack.unpackb(payload, raw=False)
                     print(f"📥 Распаковано: {data}")
                 except Exception as e:
-                    print(f"❌ Не удалось распаковать payload: {e}")
+                    print(f"❌ Ошибка распаковки: {e}")
             
             self.sock.close()
             return True
