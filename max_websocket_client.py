@@ -7,7 +7,7 @@ import random
 import qrcode
 import io
 from typing import Optional, Dict
-
+ 
 class MaxWebSocketClient:
     def __init__(self):
         self.websocket = None
