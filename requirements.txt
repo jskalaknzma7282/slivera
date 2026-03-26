@@ -1,4 +1,4 @@
 aiogram==3.17.0
-vkmax
+git+https://github.com/nsdkinx/vkmax.git
 aiohttp==3.11.11
 python-dotenv==1.0.1
