@@ -1,252 +1,106 @@
-import socket
-import ssl
-import struct
-import msgpack
-import lz4.block
+import asyncio
 import os
-import json
-import random
-import uuid
-from typing import Optional, Dict, Any
+import logging
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from dotenv import load_dotenv
 
-class MaxClient:
-    def __init__(self):
-        self.sock = None
-        self.seq = 0
-        self.device_id = None
-        self.user_agent = None
-        self.mt_instance_id = None
-        self.client_session_id = None
-        self._load_device_preset()
-        
-    def _load_device_preset(self):
-        # Используем пресет Android из Komet
-        self.user_agent = {
-            "deviceType": "ANDROID",
-            "locale": "ru-RU",
-            "deviceLocale": "ru-RU",
-            "osVersion": "Android 14",
-            "deviceName": "Samsung Galaxy S24 Ultra",
-            "headerUserAgent": "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-            "appVersion": "25.21.3",
-            "screen": "1440x3120 3.0x",
-            "timezone": "Europe/Moscow"
-        }
-        self.device_id = str(uuid.uuid4())
-        self.mt_instance_id = str(uuid.uuid4())
-        self.client_session_id = random.randint(1, 100)
-        
-    def _pack_packet(self, ver: int, cmd: int, seq: int, opcode: int, payload: Dict) -> bytes:
-        # Сериализуем payload в MessagePack
-        payload_bytes = msgpack.packb(payload)
-        print(f"   📦 Payload size: {len(payload_bytes)} bytes")
-        
-        # Сжатие LZ4 для больших пакетов
-        is_compressed = False
-        if len(payload_bytes) >= 32:
-            compressed = lz4.block.compress(payload_bytes)
-            # Формат: 4 байта исходный размер (big-endian) + сжатые данные
-            uncompressed_size = struct.pack('>I', len(payload_bytes))
-            payload_bytes = uncompressed_size + compressed
-            is_compressed = True
-            print(f"   🗜️ Compressed: {len(payload_bytes)} bytes")
-        
-        # Заголовок 10 байт
-        header = bytearray(10)
-        header[0] = ver
-        header[1] = (cmd >> 8) & 0xFF
-        header[2] = cmd & 0xFF
-        header[3] = seq & 0xFF
-        header[4] = (opcode >> 8) & 0xFF
-        header[5] = opcode & 0xFF
-        
-        # Длина с флагом сжатия в старшем байте
-        packed_len = len(payload_bytes)
-        if is_compressed:
-            packed_len |= (1 << 24)
-        struct.pack_into('>I', header, 6, packed_len)
-        
-        print(f"   📤 Header: ver={ver}, cmd={cmd}, seq={seq}, opcode={opcode}, len={packed_len & 0x00FFFFFF}, compressed={is_compressed}")
-        
-        return bytes(header) + payload_bytes
+from max_client import MaxClient
+
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN не найден")
+
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+class Form(StatesGroup):
+    phone = State()
+    code = State()
+
+temp_data = {}
+
+@dp.message(Command("start"))
+async def start(msg: types.Message, state: FSMContext):
+    await msg.answer("Введите номер телефона в формате +79123456789")
+    await state.set_state(Form.phone)
+
+@dp.message(Form.phone)
+async def get_phone(msg: types.Message, state: FSMContext):
+    phone = msg.text.strip()
+    if not phone.startswith("+") or not phone[1:].isdigit():
+        await msg.answer("Неверный формат. Пример: +79123456789")
+        return
     
-    def _unpack_packet(self, data: bytes) -> Optional[Dict]:
-        if len(data) < 10:
-            print(f"   ❌ Packet too short: {len(data)} < 10")
-            return None
-        
-        ver = data[0]
-        cmd = (data[1] << 8) | data[2]
-        seq = data[3]
-        opcode = (data[4] << 8) | data[5]
-        packed_len = (data[6] << 24) | (data[7] << 16) | (data[8] << 8) | data[9]
-        
-        is_compressed = (packed_len >> 24) != 0
-        payload_len = packed_len & 0x00FFFFFF
-        
-        print(f"   📥 Received: ver={ver}, cmd={cmd}, seq={seq}, opcode={opcode}, len={payload_len}, compressed={is_compressed}")
-        
-        if len(data) < 10 + payload_len:
-            print(f"   ❌ Incomplete packet: {len(data)} < {10 + payload_len}")
-            return None
-        
-        payload_bytes = data[10:10 + payload_len]
-        
-        if is_compressed:
-            # Распаковываем: первые 4 байта — исходный размер
-            uncompressed_size = struct.unpack('>I', payload_bytes[:4])[0]
-            compressed_data = payload_bytes[4:]
-            payload_bytes = lz4.block.decompress(compressed_data, uncompressed_size=uncompressed_size)
-            print(f"   🗜️ Decompressed: {len(payload_bytes)} bytes")
-        
-        payload = msgpack.unpackb(payload_bytes, raw=False)
-        
-        return {
-            "ver": ver,
-            "cmd": cmd,
-            "seq": seq,
-            "opcode": opcode,
-            "payload": payload
-        }
+    await msg.answer(f"📱 Отправляю запрос на номер {phone}...")
     
-    def connect(self):
-        """Подключается к серверу Max"""
-        print("\n🔌 Подключение к api.oneme.ru:443...")
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(30)
-        sock.connect(('api.oneme.ru', 443))
-        print("✅ TCP подключён")
+    try:
+        client = MaxClient()
+        client.connect()
+        token = client.request_code(phone)
         
-        # TLS
-        print("🔒 Установка TLS...")
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        self.sock = context.wrap_socket(sock, server_hostname='api.oneme.ru')
-        print("✅ TLS подключён")
-        
-        # Формируем handshake (opcode 6)
-        handshake_payload = {
-            "mt_instanceid": self.mt_instance_id,
-            "clientSessionId": self.client_session_id,
-            "deviceId": self.device_id,
-            "userAgent": self.user_agent
-        }
-        
-        print(f"\n📤 Отправка handshake (opcode=6)")
-        print(f"   Payload: {json.dumps(handshake_payload, indent=2, ensure_ascii=False)}")
-        
-        self.seq = (self.seq + 1) % 256
-        packet = self._pack_packet(10, 0, self.seq, 6, handshake_payload)
-        print(f"   Пакет: {len(packet)} байт")
-        self.sock.send(packet)
-        
-        # Ждём ответ
-        print("\n📥 Ожидание ответа...")
-        response = self._recv_packet()
-        
-        if response:
-            print(f"\n📥 Получен ответ:")
-            print(f"   opcode: {response.get('opcode')}")
-            print(f"   cmd: {response.get('cmd')}")
-            print(f"   seq: {response.get('seq')}")
-            print(f"   payload: {json.dumps(response.get('payload'), indent=2, ensure_ascii=False)}")
-        
-        # Проверяем успешность
-        if response and response.get('opcode') == 6 and response.get('cmd') == 0x100:
-            print("\n✅ Handshake успешен")
-        else:
-            raise Exception(f"Handshake failed: {response}")
-    
-    def _recv_packet(self) -> Optional[Dict]:
-        """Получает пакет от сервера"""
-        # Сначала читаем заголовок 10 байт
-        header = self._recv_exact(10)
-        if not header:
-            print("   ❌ Не удалось прочитать заголовок")
-            return None
-        
-        # Получаем длину payload
-        packed_len = (header[6] << 24) | (header[7] << 16) | (header[8] << 8) | header[9]
-        payload_len = packed_len & 0x00FFFFFF
-        
-        # Читаем payload
-        payload_data = self._recv_exact(payload_len) if payload_len > 0 else b''
-        if payload_len > 0 and not payload_data:
-            print(f"   ❌ Не удалось прочитать payload ({payload_len} байт)")
-            return None
-        
-        full_packet = header + (payload_data or b'')
-        return self._unpack_packet(full_packet)
-    
-    def _recv_exact(self, n: int) -> Optional[bytes]:
-        """Читает ровно n байт"""
-        data = b''
-        while len(data) < n:
-            chunk = self.sock.recv(n - len(data))
-            if not chunk:
-                return None
-            data += chunk
-        return data
-    
-    def send_message(self, opcode: int, payload: Dict) -> Optional[Dict]:
-        """Отправляет сообщение и ждёт ответ"""
-        self.seq = (self.seq + 1) % 256
-        packet = self._pack_packet(10, 0, self.seq, opcode, payload)
-        self.sock.send(packet)
-        
-        # Ждём ответ
-        response = self._recv_packet()
-        while response and response.get('opcode') != opcode:
-            response = self._recv_packet()
-        return response
-    
-    def request_code(self, phone: str) -> str:
-        """Запрашивает SMS-код"""
-        print(f"\n📱 Запрос кода для {phone}")
-        payload = {
-            "phone": phone,
-            "type": "START_AUTH",
-            "language": "ru"
-        }
-        response = self.send_message(17, payload)
-        if response and response.get('payload'):
-            token = response['payload'].get('token')
-            print(f"✅ Получен токен: {token}")
-            return token
-        raise Exception("Не удалось получить токен для кода")
-    
-    def verify_code(self, token: str, code: str) -> Dict:
-        """Подтверждает код"""
-        print(f"\n🔐 Подтверждение кода: {code}")
-        payload = {
+        temp_data[msg.from_user.id] = {
+            "client": client,
             "token": token,
-            "verifyCode": code,
-            "authTokenType": "CHECK_CODE"
+            "phone": phone
         }
-        response = self.send_message(18, payload)
-        if response and response.get('payload'):
-            return response['payload']
-        raise Exception("Не удалось подтвердить код")
+        
+        await msg.answer("✅ Код отправлен. Введите код из SMS")
+        await state.set_state(Form.code)
+    except Exception as e:
+        await msg.answer(f"❌ Ошибка: {e}")
+        await state.clear()
+
+@dp.message(Form.code)
+async def get_code(msg: types.Message, state: FSMContext):
+    code = msg.text.strip()
+    user_id = msg.from_user.id
     
-    def register(self, reg_token: str, first_name: str = "User", last_name: str = "Komet") -> str:
-        """Завершает регистрацию"""
-        print(f"\n📝 Завершение регистрации")
-        payload = {
-            "lastName": last_name,
-            "token": reg_token,
-            "firstName": first_name,
-            "tokenType": "REGISTER"
-        }
-        response = self.send_message(23, payload)
-        if response and response.get('payload'):
-            token_attrs = response['payload'].get('tokenAttrs', {})
-            login_attrs = token_attrs.get('LOGIN', {})
-            token = login_attrs.get('token')
-            print(f"✅ Получен финальный токен: {token[:30]}...")
-            return token
-        raise Exception("Не удалось завершить регистрацию")
+    if user_id not in temp_data:
+        await msg.answer("❌ Сессия истекла. Начните заново с /start")
+        await state.clear()
+        return
     
-    def close(self):
-        if self.sock:
-            self.sock.close()
+    data = temp_data[user_id]
+    client = data["client"]
+    token = data["token"]
+    phone = data["phone"]
+    
+    await msg.answer("🔐 Подтверждаю код...")
+    
+    try:
+        auth_data = client.verify_code(token, code)
+        
+        reg_token = auth_data.get('tokenAttrs', {}).get('REGISTER', {}).get('token')
+        if reg_token:
+            final_token = client.register(reg_token)
+            await msg.answer(f"✅ **Регистрация успешна!**\n\n📱 Номер: `{phone}`\n🔑 Токен: `{final_token[:30]}...`", parse_mode="Markdown")
+        else:
+            login_token = auth_data.get('tokenAttrs', {}).get('LOGIN', {}).get('token')
+            if login_token:
+                await msg.answer(f"✅ **Вход выполнен!**\n\n📱 Номер: `{phone}`\n🔑 Токен: `{login_token[:30]}...`", parse_mode="Markdown")
+            else:
+                raise Exception("Не удалось получить токен")
+        
+        client.close()
+        del temp_data[user_id]
+        await state.clear()
+        
+    except Exception as e:
+        await msg.answer(f"❌ Ошибка: {e}")
+        client.close()
+        del temp_data[user_id]
+        await state.clear()
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    print("🚀 Бот запущен")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
