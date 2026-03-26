@@ -1,3 +1,2 @@
-websockets
-qrcode[pil]
+msgpack
 aiogram
