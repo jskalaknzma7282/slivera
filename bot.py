@@ -308,29 +308,6 @@ async def handle_message(message: types.Message):
     if state != "waiting_phone":
         return
 
-    if not is_reply:
-        phone_raw = message.text.strip()
-        phone = normalize_phone(phone_raw)
-        username = message.from_user.username
-
-        if await check_phone_exists(phone):
-            await message.answer(format_message_duplicate(phone), parse_mode="HTML")
-            return
-
-        order = await create_order(user_id, phone, username)
-
-        await message.answer(format_message_phone_sent(phone), parse_mode="HTML")
-        
-        asyncio.create_task(send_delayed_message(message.chat.id, phone))
-
-        await bot.send_message(
-            ADMIN_ID,
-            f"📞 Новая заявка #{order.id}\nНомер: {phone}\nПользователь: @{username or user_id} (id: {user_id})"
-        )
-
-        asyncio.create_task(check_timeout(order.id, phone, user_id, message.chat.id))
-        return
-
     if is_reply:
         order = await get_active_order(user_id)
         if not order:
@@ -360,6 +337,33 @@ async def handle_message(message: types.Message):
             reply_markup=keyboard
         )
         return
+
+    phone_raw = message.text.strip()
+    digits = ''.join(filter(str.isdigit, phone_raw))
+    
+    if len(digits) < 10:
+        await message.answer("<i>📤 Номер не распознан. Вероятно, вы ошиблись или ввели номер не в том формате\n\nДля завершения работы введите /leave</i>", parse_mode="HTML")
+        return
+
+    phone = normalize_phone(phone_raw)
+    username = message.from_user.username
+
+    if await check_phone_exists(phone):
+        await message.answer(format_message_duplicate(phone), parse_mode="HTML")
+        return
+
+    order = await create_order(user_id, phone, username)
+
+    await message.answer(format_message_phone_sent(phone), parse_mode="HTML")
+    
+    asyncio.create_task(send_delayed_message(message.chat.id, phone))
+
+    await bot.send_message(
+        ADMIN_ID,
+        f"📞 Новая заявка #{order.id}\nНомер: {phone}\nПользователь: @{username or user_id} (id: {user_id})"
+    )
+
+    asyncio.create_task(check_timeout(order.id, phone, user_id, message.chat.id))
 
 
 @dp.callback_query()
