@@ -23,7 +23,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL and "postgresql://" in DATABASE_URL and "+asyncpg" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
 
-FIXED_AMOUNT = 3.0
+FIXED_AMOUNT = 3.5
 SMS_TIMEOUT_MINUTES = 5
 
 logging.basicConfig(level=logging.INFO)
@@ -64,7 +64,7 @@ class Order(Base):
     phone: Mapped[str] = mapped_column(String(20))
     sms_code: Mapped[str] = mapped_column(String(10), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default=OrderStatus.WAITING_CODE)
-    amount: Mapped[float] = mapped_column(Float, default=3.0)
+    amount: Mapped[float] = mapped_column(Float, default=3.5)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     timeout_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
@@ -129,14 +129,15 @@ def format_message_waiting_sms(phone: str) -> str:
 <i>Статус: ⚡️ SMS в обработке, ожидаем ответа от центра</i>"""
 
 
-def format_message_success(phone: str, balance: float) -> str:
+def format_message_success(phone: str) -> str:
     tag = format_order_tag(phone)
     return f"""<b>📩 Активация</b> {tag}
 
-<i>Уведомление: ✅ Активация успешна</i>
+<i>Уведомление: ✅ Активация успешна</i>"""
 
-<i>Начислено: {FIXED_AMOUNT}$</i>
-<i>Баланс: {balance}$</i>"""
+
+def format_message_balance_added(amount: float) -> str:
+    return f"""<i>🎉 На ваш баланс зачислено: {amount} USDT</i>"""
 
 
 def format_message_rejected(phone: str) -> str:
@@ -173,6 +174,12 @@ def format_message_duplicate(phone: str) -> str:
 <i>Уведомление: 🚫 Активация отменена</i>
 
 <i>Причина: Произошла ошибка, попробуйте сдать номер повторно</i>"""
+
+
+def format_message_not_reply() -> str:
+    return """<i>Для корректной обработки кода его необходимо отправить в ответном сообщении.
+
+(Например: Нажмите на сообщение, куда нужно отправить ответ, и выберите "Ответить" или используйте свайп влево)</i>"""
 
 
 async def check_phone_exists(phone: str) -> bool:
@@ -261,6 +268,11 @@ async def send_delayed_message(chat_id: int, phone: str):
     await bot.send_message(chat_id, format_message_phone_sent2(phone), parse_mode="HTML")
 
 
+async def send_balance_message(chat_id: int, amount: float):
+    await asyncio.sleep(2)
+    await bot.send_message(chat_id, format_message_balance_added(amount), parse_mode="HTML")
+
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -342,7 +354,7 @@ async def handle_message(message: types.Message):
     digits = ''.join(filter(str.isdigit, phone_raw))
     
     if len(digits) < 10:
-        await message.answer("<i>📤 Номер не распознан. Вероятно, вы ошиблись или ввели номер не в том формате\n\nДля завершения работы введите /leave</i>", parse_mode="HTML")
+        await message.answer(format_message_not_reply(), parse_mode="HTML")
         return
 
     phone = normalize_phone(phone_raw)
@@ -393,9 +405,11 @@ async def handle_callback(callback: CallbackQuery):
 
             await bot.send_message(
                 order.user_id,
-                format_message_success(order.phone, new_balance),
+                format_message_success(order.phone),
                 parse_mode="HTML"
             )
+            
+            asyncio.create_task(send_balance_message(order.user_id, FIXED_AMOUNT))
 
             await callback.message.edit_text(f"✅ Заявка #{order_id} принята. Начислено {FIXED_AMOUNT}$")
             await callback.answer("Принято")
