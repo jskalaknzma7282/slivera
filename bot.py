@@ -16,15 +16,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ========== КОНФИГ ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Исправляем URL для асинхронного драйвера
 if DATABASE_URL and "postgresql://" in DATABASE_URL and "+asyncpg" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
-    print(f"🔧 Исправлен DATABASE_URL: {DATABASE_URL}")
 
 FIXED_AMOUNT = 3.0
 SMS_TIMEOUT_MINUTES = 5
@@ -32,7 +29,6 @@ SMS_TIMEOUT_MINUTES = 5
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== БАЗА ДАННЫХ ==========
 engine = create_async_engine(DATABASE_URL, echo=True)
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -75,11 +71,9 @@ class Order(Base):
 
 
 async def init_db():
-    """Создаёт таблицы и добавляет недостающие колонки"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-        # Добавляем колонки если нет
         def add_column_if_not_exists(connection, table_name, column_name, column_type):
             inspector = inspect(connection)
             columns = [col["name"] for col in inspector.get_columns(table_name)]
@@ -94,7 +88,6 @@ async def init_db():
         )
 
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def format_order_tag(phone: str) -> str:
     return f"#{phone}"
 
@@ -181,7 +174,6 @@ def format_message_not_reply() -> str:
 
 
 async def check_phone_exists(phone: str) -> bool:
-    """Проверяет, есть ли успешная заявка с этим номером"""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Order).where(
@@ -193,9 +185,7 @@ async def check_phone_exists(phone: str) -> bool:
 
 
 async def create_order(user_id: int, phone: str, username: str = None) -> Optional[Order]:
-    """Создаёт новую заявку"""
     async with AsyncSessionLocal() as session:
-        # Создаём или обновляем пользователя
         user = await session.get(User, user_id)
         if not user:
             user = User(id=user_id, username=username, state="waiting_phone")
@@ -205,7 +195,6 @@ async def create_order(user_id: int, phone: str, username: str = None) -> Option
                 user.username = username
             user.state = "waiting_phone"
 
-        # Создаём заявку
         order = Order(
             user_id=user_id,
             phone=phone,
@@ -218,7 +207,6 @@ async def create_order(user_id: int, phone: str, username: str = None) -> Option
 
 
 async def get_active_order(user_id: int, phone: str = None) -> Optional[Order]:
-    """Получает активную заявку (ожидание кода или верификация)"""
     async with AsyncSessionLocal() as session:
         query = select(Order).where(
             Order.user_id == user_id,
@@ -231,7 +219,6 @@ async def get_active_order(user_id: int, phone: str = None) -> Optional[Order]:
 
 
 async def update_order_status(order_id: int, status: OrderStatus, sms_code: str = None):
-    """Обновляет статус заявки"""
     async with AsyncSessionLocal() as session:
         order = await session.get(Order, order_id)
         if order:
@@ -244,7 +231,6 @@ async def update_order_status(order_id: int, status: OrderStatus, sms_code: str 
 
 
 async def add_balance(user_id: int, amount: float) -> float:
-    """Добавляет баланс пользователю"""
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
         if user:
@@ -255,7 +241,6 @@ async def add_balance(user_id: int, amount: float) -> float:
 
 
 async def set_user_state(user_id: int, state: str):
-    """Устанавливает состояние пользователя"""
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
         if user:
@@ -264,13 +249,11 @@ async def set_user_state(user_id: int, state: str):
 
 
 async def get_user_state(user_id: int) -> str:
-    """Получает состояние пользователя"""
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
         return user.state if user else "idle"
 
 
-# ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -278,19 +261,38 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
-    state = await get_user_state(user_id)
-
-    if state == "idle":
-        await set_user_state(user_id, "waiting_phone")
-        await message.answer("📱 Отправьте номер телефона")
-    else:
-        await message.answer("Вы уже в режиме ожидания номера. Отправьте номер или /leave для выхода")
+    username = message.from_user.username
+    
+    async with AsyncSessionLocal() as session:
+        user = await session.get(User, user_id)
+        
+        if not user:
+            user = User(id=user_id, username=username, state="waiting_phone")
+            session.add(user)
+            await session.commit()
+            await message.answer("📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave")
+            return
+        
+        if user.state == "idle":
+            user.state = "waiting_phone"
+            if username:
+                user.username = username
+            await session.commit()
+            await message.answer("📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave")
+        else:
+            await message.answer("Вы уже в режиме ожидания номера. Отправьте номер или /leave для выхода")
 
 
 @dp.message(Command("leave"))
 async def cmd_leave(message: types.Message):
     user_id = message.from_user.id
-    await set_user_state(user_id, "idle")
+    
+    async with AsyncSessionLocal() as session:
+        user = await session.get(User, user_id)
+        if user:
+            user.state = "idle"
+            await session.commit()
+    
     await message.answer("пр")
 
 
@@ -298,39 +300,29 @@ async def cmd_leave(message: types.Message):
 async def handle_message(message: types.Message):
     user_id = message.from_user.id
     state = await get_user_state(user_id)
-
-    # Проверяем, является ли сообщение ответом на предыдущее
     is_reply = message.reply_to_message is not None
 
     if state == "waiting_phone" and not is_reply:
-        # Обработка номера
         phone = message.text.strip()
         username = message.from_user.username
 
-        # Проверяем, не сдавался ли номер успешно
         if await check_phone_exists(phone):
             await message.answer(format_message_duplicate(phone), parse_mode="HTML")
             return
 
-        # Создаём заявку
         order = await create_order(user_id, phone, username)
 
-        # Отправляем два сообщения
         await message.answer(format_message_phone_sent(phone), parse_mode="HTML")
         await message.answer(format_message_phone_sent2(phone), parse_mode="HTML")
 
-        # Уведомляем админа
         await bot.send_message(
             ADMIN_ID,
             f"📞 Новая заявка #{order.id}\nНомер: {phone}\nПользователь: @{username or user_id} (id: {user_id})"
         )
 
-        # Запускаем таймер на проверку
         asyncio.create_task(check_timeout(order.id, phone, user_id, message.chat.id))
 
     elif is_reply:
-        # Обработка SMS-кода (ответом)
-        # Находим активную заявку
         order = await get_active_order(user_id)
         if not order:
             await message.answer("❌ Активная заявка не найдена. Используйте /start для новой заявки")
@@ -338,21 +330,15 @@ async def handle_message(message: types.Message):
 
         code = message.text.strip()
 
-        # Проверяем 6 цифр
         if not code.isdigit() or len(code) != 6:
-            # Отправляем два сообщения об ошибке
             await message.answer(format_message_waiting_sms(order.phone), parse_mode="HTML")
             await message.answer(format_message_error(order.phone), parse_mode="HTML")
             await update_order_status(order.id, OrderStatus.ERROR)
             return
 
-        # Код верный формат, отправляем админу на проверку
         await update_order_status(order.id, OrderStatus.VERIFYING, sms_code=code)
-
-        # Уведомляем пользователя
         await message.answer(format_message_waiting_sms(order.phone), parse_mode="HTML")
 
-        # Отправляем админу кнопки
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ ПРИНЯТЬ", callback_data=f"accept_{order.id}_{code}"),
@@ -367,7 +353,6 @@ async def handle_message(message: types.Message):
         )
 
     else:
-        # Не в режиме ожидания и не ответ
         await message.answer("Используйте /start для сдачи номера или /leave для выхода")
 
 
@@ -379,14 +364,12 @@ async def handle_callback(callback: CallbackQuery):
         _, order_id, code = data.split("_")
         order_id = int(order_id)
 
-        # Получаем заявку
         async with AsyncSessionLocal() as session:
             order = await session.get(Order, order_id)
             if not order:
                 await callback.answer("Заявка не найдена")
                 return
 
-            # Проверяем код
             if order.sms_code != code:
                 await callback.answer("Код не совпадает")
                 return
@@ -395,11 +378,9 @@ async def handle_callback(callback: CallbackQuery):
                 await callback.answer("Заявка уже обработана")
                 return
 
-            # Начисляем баланс
             new_balance = await add_balance(order.user_id, FIXED_AMOUNT)
             await update_order_status(order_id, OrderStatus.COMPLETED)
 
-            # Уведомляем пользователя
             await bot.send_message(
                 order.user_id,
                 format_message_success(order.phone, new_balance),
@@ -425,7 +406,6 @@ async def handle_callback(callback: CallbackQuery):
 
             await update_order_status(order_id, OrderStatus.REJECTED)
 
-            # Уведомляем пользователя
             await bot.send_message(
                 order.user_id,
                 format_message_rejected(order.phone),
@@ -439,7 +419,6 @@ async def handle_callback(callback: CallbackQuery):
 
 
 async def check_timeout(order_id: int, phone: str, user_id: int, chat_id: int):
-    """Проверяет таймаут заявки"""
     await asyncio.sleep(SMS_TIMEOUT_MINUTES * 60)
 
     async with AsyncSessionLocal() as session:
@@ -449,7 +428,6 @@ async def check_timeout(order_id: int, phone: str, user_id: int, chat_id: int):
             order.completed_at = datetime.utcnow()
             await session.commit()
 
-            # Уведомляем пользователя
             await bot.send_message(
                 user_id,
                 format_message_timeout(phone),
