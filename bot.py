@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -8,10 +9,9 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import BigInteger, String, Integer, Float, DateTime, Text, inspect, select, update
+from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, select
 from sqlalchemy.sql import text
 import enum
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,6 +20,12 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Исправляем URL для асинхронного драйвера
+if DATABASE_URL and "postgresql://" in DATABASE_URL and "+asyncpg" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+    print(f"🔧 Исправлен DATABASE_URL: {DATABASE_URL}")
+
 FIXED_AMOUNT = 3.0
 SMS_TIMEOUT_MINUTES = 5
 
@@ -64,7 +70,7 @@ class Order(Base):
     status: Mapped[str] = mapped_column(String(50), default=OrderStatus.WAITING_CODE)
     amount: Mapped[float] = mapped_column(Float, default=3.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    timeout_at: Mapped[datetime] = mapped_column(DateTime)
+    timeout_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
 
@@ -73,7 +79,7 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-        # Добавляем колонку timeout_at если нет
+        # Добавляем колонки если нет
         def add_column_if_not_exists(connection, table_name, column_name, column_type):
             inspector = inspect(connection)
             columns = [col["name"] for col in inspector.get_columns(table_name)]
@@ -86,11 +92,6 @@ async def init_db():
         await conn.run_sync(
             lambda c: add_column_if_not_exists(c, "orders", "completed_at", "TIMESTAMP")
         )
-
-
-async def get_session():
-    async with AsyncSessionLocal() as session:
-        yield session
 
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
