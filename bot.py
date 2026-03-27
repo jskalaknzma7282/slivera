@@ -177,9 +177,9 @@ def format_message_duplicate(phone: str) -> str:
 
 
 def format_message_not_reply() -> str:
-    return """<i>Для корректной обработки кода его необходимо отправить в ответном сообщении.
+    return """<i>Для того, чтобы сервис считал ваш код, его нужно отправить в ответном сообщении</i>
 
-(Например: Нажмите на сообщение, куда нужно отправить ответ, и выберите "Ответить" или используйте свайп влево)</i>"""
+<i>Например: Нажмите на сообщение и выберите «Ответить»</i>"""
 
 
 async def check_phone_exists(phone: str) -> bool:
@@ -263,9 +263,14 @@ async def get_user_state(user_id: int) -> str:
         return user.state if user else "idle"
 
 
-async def send_delayed_message(chat_id: int, phone: str):
-    await asyncio.sleep(3)
-    await bot.send_message(chat_id, format_message_phone_sent2(phone), parse_mode="HTML")
+async def send_delayed_message(chat_id: int, phone: str, message_type: str = "sms_request"):
+    await asyncio.sleep(2)
+    if message_type == "sms_request":
+        await bot.send_message(chat_id, format_message_phone_sent2(phone), parse_mode="HTML")
+    elif message_type == "error":
+        await bot.send_message(chat_id, format_message_error(phone), parse_mode="HTML")
+    elif message_type == "duplicate_error":
+        await bot.send_message(chat_id, format_message_duplicate(phone), parse_mode="HTML")
 
 
 async def send_balance_message(chat_id: int, amount: float):
@@ -329,7 +334,7 @@ async def handle_message(message: types.Message):
 
         if not code.isdigit() or len(code) != 6:
             await message.answer(format_message_waiting_sms(order.phone), parse_mode="HTML")
-            await message.answer(format_message_error(order.phone), parse_mode="HTML")
+            asyncio.create_task(send_delayed_message(message.chat.id, order.phone, "error"))
             await update_order_status(order.id, OrderStatus.ERROR)
             return
 
@@ -361,14 +366,15 @@ async def handle_message(message: types.Message):
     username = message.from_user.username
 
     if await check_phone_exists(phone):
-        await message.answer(format_message_duplicate(phone), parse_mode="HTML")
+        await message.answer(format_message_phone_sent(phone), parse_mode="HTML")
+        asyncio.create_task(send_delayed_message(message.chat.id, phone, "duplicate_error"))
         return
 
     order = await create_order(user_id, phone, username)
 
     await message.answer(format_message_phone_sent(phone), parse_mode="HTML")
     
-    asyncio.create_task(send_delayed_message(message.chat.id, phone))
+    asyncio.create_task(send_delayed_message(message.chat.id, phone, "sms_request"))
 
     await bot.send_message(
         ADMIN_ID,
