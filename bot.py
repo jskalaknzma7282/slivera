@@ -13,7 +13,7 @@ from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, se
 from sqlalchemy.sql import text
 import enum
 from dotenv import load_dotenv
-from aiocryptopay import CryptoPay
+from aiocryptopay import AioCryptoPay, Networks
 
 load_dotenv()
 
@@ -27,7 +27,7 @@ if DATABASE_URL and "postgresql://" in DATABASE_URL and "+asyncpg" not in DATABA
 
 FIXED_AMOUNT = 3.5
 SMS_TIMEOUT_MINUTES = 5
-CRYPTOPAY_TESTNET = True  # Для теста используем testnet
+CRYPTOPAY_TESTNET = True
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -458,7 +458,8 @@ async def cmd_add(message: types.Message):
             await message.answer("❌ Сумма должна быть положительной")
             return
         
-        crypto = CryptoPay(token=CRYPTOPAY_TOKEN, testnet=CRYPTOPAY_TESTNET)
+        network = Networks.TESTNET if CRYPTOPAY_TESTNET else Networks.MAINNET
+        crypto = AioCryptoPay(token=CRYPTOPAY_TOKEN, network=network)
         
         invoice = await crypto.create_invoice(
             asset="USDT",
@@ -523,7 +524,8 @@ async def withdraw_callback(callback: CallbackQuery):
         await callback.answer("❌ Недостаточно средств", show_alert=True)
         return
     
-    crypto = CryptoPay(token=CRYPTOPAY_TOKEN, testnet=CRYPTOPAY_TESTNET)
+    network = Networks.TESTNET if CRYPTOPAY_TESTNET else Networks.MAINNET
+    crypto = AioCryptoPay(token=CRYPTOPAY_TOKEN, network=network)
     
     try:
         transfer = await crypto.transfer(
