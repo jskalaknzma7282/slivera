@@ -88,38 +88,49 @@ async def init_db():
         )
 
 
+def normalize_phone(phone: str) -> str:
+    digits = ''.join(filter(str.isdigit, phone))
+    
+    if len(digits) == 10:
+        return f"+7{digits}"
+    if len(digits) == 11 and digits.startswith('8'):
+        return f"+7{digits[1:]}"
+    if len(digits) == 11 and digits.startswith('7'):
+        return f"+{digits}"
+    if len(digits) == 12 and digits.startswith('7'):
+        return f"+{digits}"
+    
+    return phone
+
+
 def format_order_tag(phone: str) -> str:
     return f"#{phone}"
 
 
 def format_message_phone_sent(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>🔖 Активация</b>
-{tag}
+    return f"""<b>🔖 Активация</b> {tag}
 
 <b>Уведомление:</b> <i>⚡️ Номер передан в центр</i>"""
 
 
 def format_message_phone_sent2(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>🔖 Активация</b>
-{tag}
+    return f"""<b>🔖 Активация</b> {tag}
 
 <i>Уведомление: В течение 2-х минут вам поступит SMS на ваш номер, отправьте его ответом на это сообщение</i>"""
 
 
 def format_message_waiting_sms(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>📩 Активация</b>
-{tag}
+    return f"""<b>📩 Активация</b> {tag}
 
 <i>Статус: ⚡️ SMS в обработке, ожидаем ответа от центра</i>"""
 
 
 def format_message_success(phone: str, balance: float) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>📩 Активация</b>
-{tag}
+    return f"""<b>📩 Активация</b> {tag}
 
 <i>Уведомление: ✅ Активация успешна</i>
 
@@ -129,8 +140,7 @@ def format_message_success(phone: str, balance: float) -> str:
 
 def format_message_rejected(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>📩 Активация</b>
-{tag}
+    return f"""<b>📩 Активация</b> {tag}
 
 <i>Уведомление: 🚫 Активация отменена</i>
 
@@ -139,8 +149,7 @@ def format_message_rejected(phone: str) -> str:
 
 def format_message_timeout(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>🔖 Активация</b>
-{tag}
+    return f"""<b>🔖 Активация</b> {tag}
 
 <i>Уведомление: 🚫 Активация отменена</i>
 
@@ -149,8 +158,7 @@ def format_message_timeout(phone: str) -> str:
 
 def format_message_error(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>📩 Активация</b>
-{tag}
+    return f"""<b>📩 Активация</b> {tag}
 
 <i>Уведомление: 🚫 Активация отменена</i>
 
@@ -159,18 +167,11 @@ def format_message_error(phone: str) -> str:
 
 def format_message_duplicate(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>🔖 Активация</b>
-{tag}
+    return f"""<b>🔖 Активация</b> {tag}
 
 <i>Уведомление: 🚫 Активация отменена</i>
 
 <i>Причина: Произошла ошибка, попробуйте сдать номер повторно</i>"""
-
-
-def format_message_not_reply() -> str:
-    return """<i>Чтобы распознать на какой номер вы отправили SMS, ответьте на него!</i>
-
-<i>Например: Свайпните влево сообщение, на которое вам нужно ответить</i>"""
 
 
 async def check_phone_exists(phone: str) -> bool:
@@ -274,13 +275,9 @@ async def cmd_start(message: types.Message):
             return
         
         if user.state == "idle":
-            user.state = "waiting_phone"
-            if username:
-                user.username = username
-            await session.commit()
-            await message.answer("📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave")
+            await message.answer("пр")
         else:
-            await message.answer("Вы уже в режиме ожидания номера. Отправьте номер или /leave для выхода")
+            await message.answer("📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave")
 
 
 @dp.message(Command("leave"))
@@ -302,8 +299,12 @@ async def handle_message(message: types.Message):
     state = await get_user_state(user_id)
     is_reply = message.reply_to_message is not None
 
-    if state == "waiting_phone" and not is_reply:
-        phone = message.text.strip()
+    if state != "waiting_phone":
+        return
+
+    if not is_reply:
+        phone_raw = message.text.strip()
+        phone = normalize_phone(phone_raw)
         username = message.from_user.username
 
         if await check_phone_exists(phone):
@@ -321,11 +322,11 @@ async def handle_message(message: types.Message):
         )
 
         asyncio.create_task(check_timeout(order.id, phone, user_id, message.chat.id))
+        return
 
-    elif is_reply:
+    if is_reply:
         order = await get_active_order(user_id)
         if not order:
-            await message.answer("❌ Активная заявка не найдена. Используйте /start для новой заявки")
             return
 
         code = message.text.strip()
@@ -351,9 +352,7 @@ async def handle_message(message: types.Message):
             f"🔐 Код для заявки #{order.id}\nНомер: {order.phone}\nКод: {code}\nПользователь: @{message.from_user.username or user_id}",
             reply_markup=keyboard
         )
-
-    else:
-        await message.answer("Используйте /start для сдачи номера или /leave для выхода")
+        return
 
 
 @dp.callback_query()
