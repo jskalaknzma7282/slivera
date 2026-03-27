@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, select
+from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, select, update
 from sqlalchemy.sql import text
 import enum
 from dotenv import load_dotenv
@@ -46,6 +46,12 @@ class OrderStatus(str, enum.Enum):
     ERROR = "error"
 
 
+class WithdrawStatus(str, enum.Enum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    REJECTED = "rejected"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -67,6 +73,17 @@ class Order(Base):
     amount: Mapped[float] = mapped_column(Float, default=3.5)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     timeout_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+
+
+class Withdraw(Base):
+    __tablename__ = "withdraws"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    amount: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(50), default=WithdrawStatus.PENDING)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
 
@@ -182,6 +199,33 @@ def format_message_not_reply() -> str:
 <i>Например: Нажмите на сообщение и выберите «Ответить»</i>"""
 
 
+def format_message_invalid_format() -> str:
+    return """<i>Некорректный формат. Пожалуйста, отправьте номер в международном формате или используйте /leave для выхода</i>"""
+
+
+def format_main_menu(user_id: int, balance: float) -> str:
+    return f"""<b>Добро пожаловать в сервис freeHUB ⚡️</b>
+
+<i>📤 Полная автоматизация без ручного вмешательства
+⏱️ Работа 24/7 и отзывчивая администрация
+🔖 Выплаты автоматизированные, все прозрачно</i>
+
+<b>Цены:</b>
+Ⓜ️ — ${FIXED_AMOUNT}
+
+<b>💼 Ваш аккаунт</b>
+
+🆔 ID: {user_id}
+💰 Баланс: ${balance:.2f}"""
+
+
+def format_profile(user_id: int, balance: float) -> str:
+    return f"""<b>💼 Ваш аккаунт</b>
+
+🆔 ID: {user_id}
+💰 Баланс: ${balance:.2f}"""
+
+
 async def check_phone_exists(phone: str) -> bool:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -249,6 +293,12 @@ async def add_balance(user_id: int, amount: float) -> float:
         return 0.0
 
 
+async def get_user_balance(user_id: int) -> float:
+    async with AsyncSessionLocal() as session:
+        user = await session.get(User, user_id)
+        return user.balance if user else 0.0
+
+
 async def set_user_state(user_id: int, state: str):
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
@@ -261,6 +311,33 @@ async def get_user_state(user_id: int) -> str:
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
         return user.state if user else "idle"
+
+
+async def create_withdraw(user_id: int, amount: float) -> Optional[Withdraw]:
+    async with AsyncSessionLocal() as session:
+        withdraw = Withdraw(user_id=user_id, amount=amount)
+        session.add(withdraw)
+        await session.commit()
+        return withdraw
+
+
+async def update_withdraw_status(withdraw_id: int, status: WithdrawStatus):
+    async with AsyncSessionLocal() as session:
+        withdraw = await session.get(Withdraw, withdraw_id)
+        if withdraw:
+            withdraw.status = status
+            withdraw.completed_at = datetime.utcnow()
+            await session.commit()
+
+
+async def deduct_balance(user_id: int, amount: float) -> bool:
+    async with AsyncSessionLocal() as session:
+        user = await session.get(User, user_id)
+        if user and user.balance >= amount:
+            user.balance -= amount
+            await session.commit()
+            return True
+        return False
 
 
 async def send_delayed_message(chat_id: int, phone: str, message_type: str = "sms_request"):
@@ -282,6 +359,24 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📮 Начать работу", callback_data="start_work"),
+            InlineKeyboardButton(text="🔐 Профиль", callback_data="profile")
+        ]
+    ])
+
+
+def get_profile_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🎉 Вывод", callback_data="withdraw"),
+            InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")
+        ]
+    ])
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
@@ -291,16 +386,17 @@ async def cmd_start(message: types.Message):
         user = await session.get(User, user_id)
         
         if not user:
-            user = User(id=user_id, username=username, state="waiting_phone")
+            user = User(id=user_id, username=username, state="idle")
             session.add(user)
             await session.commit()
-            await message.answer("<i>📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave</i>", parse_mode="HTML")
-            return
         
-        if user.state == "idle":
-            await message.answer("пр")
-        else:
-            await message.answer("<i>📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave</i>", parse_mode="HTML")
+        balance = user.balance if user else 0.0
+    
+    await message.answer(
+        format_main_menu(user_id, balance),
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard()
+    )
 
 
 @dp.message(Command("leave"))
@@ -313,7 +409,131 @@ async def cmd_leave(message: types.Message):
             user.state = "idle"
             await session.commit()
     
-    await message.answer("пр")
+    balance = await get_user_balance(user_id)
+    await message.answer(
+        format_main_menu(user_id, balance),
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard()
+    )
+
+
+@dp.callback_query(lambda c: c.data == "start_work")
+async def start_work_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    await set_user_state(user_id, "waiting_phone")
+    
+    await callback.message.edit_text(
+        "<i>📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave</i>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "profile")
+async def profile_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    balance = await get_user_balance(user_id)
+    
+    await callback.message.edit_text(
+        format_profile(user_id, balance),
+        parse_mode="HTML",
+        reply_markup=get_profile_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "back_to_menu")
+async def back_to_menu_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    balance = await get_user_balance(user_id)
+    
+    await callback.message.edit_text(
+        format_main_menu(user_id, balance),
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "withdraw")
+async def withdraw_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    balance = await get_user_balance(user_id)
+    
+    if balance < FIXED_AMOUNT:
+        await callback.answer("❌ Недостаточно средств", show_alert=True)
+        return
+    
+    # Создаём заявку на вывод
+    withdraw = await create_withdraw(user_id, balance)
+    
+    # Отправляем админу
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ ПОДТВЕРДИТЬ", callback_data=f"confirm_withdraw_{withdraw.id}"),
+            InlineKeyboardButton(text="❌ ОТКЛОНИТЬ", callback_data=f"reject_withdraw_{withdraw.id}")
+        ]
+    ])
+    
+    await bot.send_message(
+        ADMIN_ID,
+        f"💰 Новая заявка на вывод #{withdraw.id}\n"
+        f"Пользователь: @{callback.from_user.username or user_id} (id: {user_id})\n"
+        f"Сумма: {balance}$",
+        reply_markup=keyboard
+    )
+    
+    await callback.answer("✅ Заявка на вывод отправлена администратору", show_alert=True)
+
+
+@dp.callback_query(lambda c: c.data.startswith("confirm_withdraw_"))
+async def confirm_withdraw_callback(callback: CallbackQuery):
+    withdraw_id = int(callback.data.split("_")[2])
+    
+    async with AsyncSessionLocal() as session:
+        withdraw = await session.get(Withdraw, withdraw_id)
+        if not withdraw or withdraw.status != WithdrawStatus.PENDING:
+            await callback.answer("Заявка уже обработана")
+            return
+        
+        # Списываем баланс
+        success = await deduct_balance(withdraw.user_id, withdraw.amount)
+        if success:
+            await update_withdraw_status(withdraw_id, WithdrawStatus.COMPLETED)
+            
+            await bot.send_message(
+                withdraw.user_id,
+                f"<i>✅ Вывод {withdraw.amount}$ успешно выполнен</i>",
+                parse_mode="HTML"
+            )
+            
+            await callback.message.edit_text(f"✅ Вывод #{withdraw_id} подтверждён. Сумма: {withdraw.amount}$")
+            await callback.answer("Вывод подтверждён")
+        else:
+            await callback.answer("Ошибка: недостаточно средств")
+
+
+@dp.callback_query(lambda c: c.data.startswith("reject_withdraw_"))
+async def reject_withdraw_callback(callback: CallbackQuery):
+    withdraw_id = int(callback.data.split("_")[2])
+    
+    async with AsyncSessionLocal() as session:
+        withdraw = await session.get(Withdraw, withdraw_id)
+        if not withdraw or withdraw.status != WithdrawStatus.PENDING:
+            await callback.answer("Заявка уже обработана")
+            return
+        
+        await update_withdraw_status(withdraw_id, WithdrawStatus.REJECTED)
+        
+        await bot.send_message(
+            withdraw.user_id,
+            "<i>❌ Заявка на вывод отклонена администратором</i>",
+            parse_mode="HTML"
+        )
+        
+        await callback.message.edit_text(f"❌ Вывод #{withdraw_id} отклонён")
+        await callback.answer("Вывод отклонён")
 
 
 @dp.message(F.text)
@@ -358,8 +578,14 @@ async def handle_message(message: types.Message):
     phone_raw = message.text.strip()
     digits = ''.join(filter(str.isdigit, phone_raw))
     
-    if len(digits) < 10:
-        await message.answer(format_message_not_reply(), parse_mode="HTML")
+    is_phone = False
+    if len(digits) >= 10 and len(digits) <= 12:
+        first_digit = digits[0]
+        if first_digit in ['7', '8', '9']:
+            is_phone = True
+    
+    if not is_phone:
+        await message.answer(format_message_invalid_format(), parse_mode="HTML")
         return
 
     phone = normalize_phone(phone_raw)
