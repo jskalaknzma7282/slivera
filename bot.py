@@ -132,10 +132,10 @@ def format_order_tag(phone: str) -> str:
 def format_main_menu() -> str:
     return f"""⚡️FreeLine - сервис по приему СМС на нужные вам сервисы!
 
-Наши преимущества:
+<blockquote>Наши преимущества:
 • Полная автоматизация работы, без посредника.
 • Автоматические выводы и моментальные зачисления.
-• Прозрачный сервис и отзывчивая администрация.
+• Прозрачный сервис и отзывчивая администрация.</blockquote>
 
 Цена на сегодня: Ⓜ️ — 3.5$"""
 
@@ -413,6 +413,10 @@ async def cmd_leave(message: types.Message):
         if user:
             user.state = "idle"
             await session.commit()
+    
+    order = await get_active_order(user_id)
+    if order and order.status == OrderStatus.WAITING_CODE:
+        await update_order_status(order.id, OrderStatus.ERROR)
     
     await message.answer(
         format_main_menu(),
