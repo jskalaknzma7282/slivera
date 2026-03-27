@@ -13,18 +13,21 @@ from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, se
 from sqlalchemy.sql import text
 import enum
 from dotenv import load_dotenv
+from aiocryptopay import CryptoPay
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
+CRYPTOPAY_TOKEN = os.getenv("CRYPTOPAY_TOKEN")
 
 if DATABASE_URL and "postgresql://" in DATABASE_URL and "+asyncpg" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
 
 FIXED_AMOUNT = 3.5
 SMS_TIMEOUT_MINUTES = 5
+CRYPTOPAY_TESTNET = True  # Для теста используем testnet
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -436,6 +439,45 @@ async def cmd_leave(message: types.Message):
     )
 
 
+@dp.message(Command("add"))
+async def cmd_add(message: types.Message):
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        return
+    
+    try:
+        args = message.text.split()
+        if len(args) != 2:
+            await message.answer("❌ Использование: /add <сумма>")
+            return
+        
+        amount = float(args[1])
+        
+        if amount <= 0:
+            await message.answer("❌ Сумма должна быть положительной")
+            return
+        
+        crypto = CryptoPay(token=CRYPTOPAY_TOKEN, testnet=CRYPTOPAY_TESTNET)
+        
+        invoice = await crypto.create_invoice(
+            asset="USDT",
+            amount=amount,
+            description=f"Пополнение баланса приложения FreeLine на {amount} USDT"
+        )
+        
+        await message.answer(
+            f"💰 Создан инвойс на пополнение на {amount} USDT\n\n"
+            f"Ссылка для оплаты: {invoice.bot_url}\n"
+            f"ID инвойса: {invoice.invoice_id}"
+        )
+        
+        await crypto.close()
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
 @dp.callback_query(lambda c: c.data == "start_work")
 async def start_work_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -477,74 +519,41 @@ async def withdraw_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
     balance = await get_user_balance(user_id)
     
-    if balance < FIXED_AMOUNT:
+    if balance <= 0:
         await callback.answer("❌ Недостаточно средств", show_alert=True)
         return
     
-    withdraw = await create_withdraw(user_id, balance)
+    crypto = CryptoPay(token=CRYPTOPAY_TOKEN, testnet=CRYPTOPAY_TESTNET)
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="ПОДТВЕРДИТЬ", callback_data=f"confirm_withdraw_{withdraw.id}"),
-            InlineKeyboardButton(text="ОТКЛОНИТЬ", callback_data=f"reject_withdraw_{withdraw.id}")
-        ]
-    ])
-    
-    await bot.send_message(
-        ADMIN_ID,
-        f"Новая заявка на вывод #{withdraw.id}\nПользователь: @{callback.from_user.username or user_id} (id: {user_id})\nСумма: {balance}$",
-        reply_markup=keyboard
-    )
-    
-    await callback.answer("✅ Заявка на вывод отправлена администратору", show_alert=True)
-
-
-@dp.callback_query(lambda c: c.data.startswith("confirm_withdraw_"))
-async def confirm_withdraw_callback(callback: CallbackQuery):
-    withdraw_id = int(callback.data.split("_")[2])
-    
-    async with AsyncSessionLocal() as session:
-        withdraw = await session.get(Withdraw, withdraw_id)
-        if not withdraw or withdraw.status != WithdrawStatus.PENDING:
-            await callback.answer("Заявка уже обработана")
-            return
-        
-        success = await deduct_balance(withdraw.user_id, withdraw.amount)
-        if success:
-            await update_withdraw_status(withdraw_id, WithdrawStatus.COMPLETED)
-            
-            await bot.send_message(
-                withdraw.user_id,
-                f"<i>✅ Вывод {withdraw.amount}$ успешно выполнен</i>",
-                parse_mode="HTML"
-            )
-            
-            await callback.message.edit_text(f"✅ Вывод #{withdraw_id} подтверждён. Сумма: {withdraw.amount}$")
-            await callback.answer("Вывод подтверждён")
-        else:
-            await callback.answer("Ошибка: недостаточно средств")
-
-
-@dp.callback_query(lambda c: c.data.startswith("reject_withdraw_"))
-async def reject_withdraw_callback(callback: CallbackQuery):
-    withdraw_id = int(callback.data.split("_")[2])
-    
-    async with AsyncSessionLocal() as session:
-        withdraw = await session.get(Withdraw, withdraw_id)
-        if not withdraw or withdraw.status != WithdrawStatus.PENDING:
-            await callback.answer("Заявка уже обработана")
-            return
-        
-        await update_withdraw_status(withdraw_id, WithdrawStatus.REJECTED)
-        
-        await bot.send_message(
-            withdraw.user_id,
-            "<i>❌ Заявка на вывод отклонена администратором</i>",
-            parse_mode="HTML"
+    try:
+        transfer = await crypto.transfer(
+            user_id=user_id,
+            asset="USDT",
+            amount=balance,
+            spend_id=f"withdraw_{user_id}_{int(datetime.utcnow().timestamp())}",
+            comment="Вывод средств из сервиса FreeLine"
         )
         
-        await callback.message.edit_text(f"❌ Вывод #{withdraw_id} отклонён")
-        await callback.answer("Вывод отклонён")
+        await deduct_balance(user_id, balance)
+        
+        await callback.message.edit_text(
+            format_profile(user_id, 0),
+            parse_mode="HTML",
+            reply_markup=get_profile_keyboard()
+        )
+        
+        await callback.answer(f"✅ Вывод {balance}$ выполнен", show_alert=True)
+        
+    except Exception as e:
+        error_text = str(e).lower()
+        
+        if "insufficient" in error_text or "balance" in error_text or "not enough" in error_text:
+            await callback.answer("❌ Казна закончилась, ожидайте пополнения! (≈20 минут)", show_alert=True)
+        else:
+            logger.error(f"Ошибка вывода: {e}")
+            await callback.answer("❌ Ошибка выплаты, попробуйте позже", show_alert=True)
+    
+    await crypto.close()
 
 
 @dp.message(F.text)
