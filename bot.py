@@ -388,20 +388,31 @@ dp = Dispatcher()
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username
+    state = await get_user_state(user_id)
     
     async with AsyncSessionLocal() as session:
         user = await session.get(User, user_id)
-        
         if not user:
-            user = User(id=user_id, username=username, state="idle")
+            user = User(id=user_id, username=username, state="waiting_phone")
             session.add(user)
             await session.commit()
+            await message.answer(
+                "В следующем сообщении отправьте номер телефона\n\nДля завершения работы введите /leave",
+                parse_mode="HTML"
+            )
+            return
     
-    await message.answer(
-        format_main_menu(),
-        parse_mode="HTML",
-        reply_markup=get_main_menu_keyboard()
-    )
+    if state == "idle":
+        await message.answer(
+            format_main_menu(),
+            parse_mode="HTML",
+            reply_markup=get_main_menu_keyboard()
+        )
+    else:
+        await message.answer(
+            "В следующем сообщении отправьте номер телефона\n\nДля завершения работы введите /leave",
+            parse_mode="HTML"
+        )
 
 
 @dp.message(Command("leave"))
