@@ -104,14 +104,15 @@ def normalize_phone(phone: str) -> str:
 
 
 def format_order_tag(phone: str) -> str:
-    return f"#{phone}"
+    digits = ''.join(filter(str.isdigit, phone))
+    return f"#s{digits}"
 
 
 def format_message_phone_sent(phone: str) -> str:
     tag = format_order_tag(phone)
     return f"""<b>🔖 Активация</b> {tag}
 
-<b>Уведомление:</b> <i>⚡️ Номер передан в центр</i>"""
+<i>Уведомление: ⚡️ Номер передан в центр</i>"""
 
 
 def format_message_phone_sent2(phone: str) -> str:
@@ -255,6 +256,11 @@ async def get_user_state(user_id: int) -> str:
         return user.state if user else "idle"
 
 
+async def send_delayed_message(chat_id: int, phone: str):
+    await asyncio.sleep(3)
+    await bot.send_message(chat_id, format_message_phone_sent2(phone), parse_mode="HTML")
+
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -271,13 +277,13 @@ async def cmd_start(message: types.Message):
             user = User(id=user_id, username=username, state="waiting_phone")
             session.add(user)
             await session.commit()
-            await message.answer("📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave")
+            await message.answer("<i>📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave</i>", parse_mode="HTML")
             return
         
         if user.state == "idle":
             await message.answer("пр")
         else:
-            await message.answer("📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave")
+            await message.answer("<i>📋 В следующем сообщении отправьте номер телефона контрагенту 🇷🇺\n\nЧтобы закончить работу введите /leave</i>", parse_mode="HTML")
 
 
 @dp.message(Command("leave"))
@@ -314,7 +320,8 @@ async def handle_message(message: types.Message):
         order = await create_order(user_id, phone, username)
 
         await message.answer(format_message_phone_sent(phone), parse_mode="HTML")
-        await message.answer(format_message_phone_sent2(phone), parse_mode="HTML")
+        
+        asyncio.create_task(send_delayed_message(message.chat.id, phone))
 
         await bot.send_message(
             ADMIN_ID,
