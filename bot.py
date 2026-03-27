@@ -13,7 +13,7 @@ from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, se
 from sqlalchemy.sql import text
 import enum
 from dotenv import load_dotenv
-from aiocryptopay import AioCryptoPay, Networks
+from aiocryptopay import AioCryptoPay
 
 load_dotenv()
 
@@ -458,7 +458,7 @@ async def cmd_add(message: types.Message):
             await message.answer("❌ Сумма должна быть положительной")
             return
         
-        network = Networks.TESTNET if CRYPTOPAY_TESTNET else Networks.MAINNET
+        network = "testnet" if CRYPTOPAY_TESTNET else "mainnet"
         crypto = AioCryptoPay(token=CRYPTOPAY_TOKEN, network=network)
         
         invoice = await crypto.create_invoice(
@@ -524,7 +524,7 @@ async def withdraw_callback(callback: CallbackQuery):
         await callback.answer("❌ Недостаточно средств", show_alert=True)
         return
     
-    network = Networks.TESTNET if CRYPTOPAY_TESTNET else Networks.MAINNET
+    network = "testnet" if CRYPTOPAY_TESTNET else "mainnet"
     crypto = AioCryptoPay(token=CRYPTOPAY_TOKEN, network=network)
     
     try:
