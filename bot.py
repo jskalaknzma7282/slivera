@@ -13,7 +13,7 @@ from sqlalchemy import BigInteger, String, Integer, Float, DateTime, inspect, se
 from sqlalchemy.sql import text
 import enum
 from dotenv import load_dotenv
-from aiocryptopay import AioCryptoPay
+from crypto_pay_api_sdk import cryptopay
 
 load_dotenv()
 
@@ -458,11 +458,10 @@ async def cmd_add(message: types.Message):
             await message.answer("❌ Сумма должна быть положительной")
             return
         
-        network = "testnet" if CRYPTOPAY_TESTNET else "mainnet"
-        crypto = AioCryptoPay(token=CRYPTOPAY_TOKEN, network=network)
+        crypto = cryptopay.Crypto(CRYPTOPAY_TOKEN, testnet=CRYPTOPAY_TESTNET)
         
         invoice = await crypto.create_invoice(
-            asset="USDT",
+            asset='USDT',
             amount=amount,
             description=f"Пополнение баланса приложения FreeLine на {amount} USDT"
         )
@@ -472,8 +471,6 @@ async def cmd_add(message: types.Message):
             f"Ссылка для оплаты: {invoice.bot_url}\n"
             f"ID инвойса: {invoice.invoice_id}"
         )
-        
-        await crypto.close()
         
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -524,13 +521,12 @@ async def withdraw_callback(callback: CallbackQuery):
         await callback.answer("❌ Недостаточно средств", show_alert=True)
         return
     
-    network = "testnet" if CRYPTOPAY_TESTNET else "mainnet"
-    crypto = AioCryptoPay(token=CRYPTOPAY_TOKEN, network=network)
+    crypto = cryptopay.Crypto(CRYPTOPAY_TOKEN, testnet=CRYPTOPAY_TESTNET)
     
     try:
         transfer = await crypto.transfer(
             user_id=user_id,
-            asset="USDT",
+            asset='USDT',
             amount=balance,
             spend_id=f"withdraw_{user_id}_{int(datetime.utcnow().timestamp())}",
             comment="Вывод средств из сервиса FreeLine"
@@ -554,8 +550,6 @@ async def withdraw_callback(callback: CallbackQuery):
         else:
             logger.error(f"Ошибка вывода: {e}")
             await callback.answer("❌ Ошибка выплаты, попробуйте позже", show_alert=True)
-    
-    await crypto.close()
 
 
 @dp.message(F.text)
