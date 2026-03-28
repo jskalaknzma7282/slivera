@@ -2,4 +2,4 @@ aiogram==3.17.0
 asyncpg==0.30.0
 sqlalchemy==2.0.41
 python-dotenv==1.0.1
-aiocryptopay==0.4.8
+crypto-pay-api-sdk
