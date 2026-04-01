@@ -8,11 +8,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Цветные reply-кнопки
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [
-            KeyboardButton(text="Ссылки"),
-            KeyboardButton(text="Реферальная система")
+            KeyboardButton(text="Ссылки", style="success"),           # Зеленый
+            KeyboardButton(text="Реферальная система", style="danger") # Красный
         ]
     ],
     resize_keyboard=True
