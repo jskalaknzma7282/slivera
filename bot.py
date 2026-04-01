@@ -8,12 +8,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Цветные reply-кнопки
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [
-            KeyboardButton(text="Ссылки", style="success"),           # Зеленый
-            KeyboardButton(text="Реферальная система", style="danger") # Красный
+            KeyboardButton(text="Информация", style="success"),
+            KeyboardButton(text="Ссылки"),
+            KeyboardButton(text="Поддержка", style="danger")
         ]
     ],
     resize_keyboard=True
@@ -21,24 +21,24 @@ keyboard = ReplyKeyboardMarkup(
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("🔐")
-    
-    await asyncio.sleep(1)
-    
     await message.answer(
-        "<b>🔑 Добро пожаловать в GSM!</b>\n\n"
-        "<i>• Выберите действие:</i>",
+        "Добро пожаловать в GSM👋\n\n"
+        "<i>Выберите действие:</i>",
         parse_mode="HTML",
         reply_markup=keyboard
     )
+
+@dp.message(lambda message: message.text == "Информация")
+async def info(message: types.Message):
+    await message.answer("Заглушка: Информация. В разработке")
 
 @dp.message(lambda message: message.text == "Ссылки")
 async def links(message: types.Message):
     await message.answer("Заглушка: Ссылки. В разработке")
 
-@dp.message(lambda message: message.text == "Реферальная система")
-async def referral(message: types.Message):
-    await message.answer("Заглушка: Реферальная система. В разработке")
+@dp.message(lambda message: message.text == "Поддержка")
+async def support(message: types.Message):
+    await message.answer("Заглушка: Поддержка. В разработке")
 
 async def main():
     await dp.start_polling(bot)
