@@ -32,7 +32,27 @@ async def start(message: types.Message):
 
 @dp.message(lambda message: message.text == "Информация")
 async def info(message: types.Message):
-    await message.answer("Заглушка: Информация. В разработке")
+    inline_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="Назад",
+                callback_data="back_to_menu",
+                style="primary"
+            )
+        ]
+    ])
+    
+    await message.answer(
+        "<b>🧊 GSM - безграничная вселенная товаров и услуг.</b>\n\n"
+        "<blockquote>"
+        "• Полностью WHITE-сервис, никаких незаконных товаров.\n"
+        "• Универсальность и безопасность сделок пользователей через наш авто-гарант: @GSMreputation_bot.\n"
+        "• Отзывчивая администрация, строгий подход\n"
+        "</blockquote>\n"
+        "Мы дорожим своей аудиторией.",
+        parse_mode="HTML",
+        reply_markup=inline_keyboard
+    )
 
 @dp.message(lambda message: message.text == "Ссылки")
 async def links(message: types.Message):
@@ -56,6 +76,17 @@ async def support(message: types.Message):
         parse_mode="HTML",
         reply_markup=inline_keyboard
     )
+
+@dp.callback_query(lambda call: call.data == "back_to_menu")
+async def back_to_menu(callback: types.CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer(
+        "Добро пожаловать в GSM👋\n\n"
+        "<i>Выберите действие:</i>",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await callback.answer()
 
 async def main():
     await dp.start_polling(bot)
