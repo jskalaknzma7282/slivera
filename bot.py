@@ -12,7 +12,9 @@ keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [
             KeyboardButton(text="Информация", style="success"),
-            KeyboardButton(text="Ссылки"),
+            KeyboardButton(text="Ссылки")
+        ],
+        [
             KeyboardButton(text="Поддержка", style="danger")
         ]
     ],
@@ -22,7 +24,7 @@ keyboard = ReplyKeyboardMarkup(
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
-        "Добро пожаловать в GSM👋\n\n"
+        "Добро пожаловать в GSM👋\n"
         "<i>Выберите действие:</i>",
         parse_mode="HTML",
         reply_markup=keyboard
