@@ -56,7 +56,19 @@ async def info(message: types.Message):
 
 @dp.message(lambda message: message.text == "Ссылки")
 async def links(message: types.Message):
-    await message.answer("Заглушка: Ссылки. В разработке")
+    inline_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="GSM | Купи-Продай",
+                url="https://t.me/+MWgDPkm1VoU0NDMy"
+            )
+        ]
+    ])
+    
+    await message.answer(
+        "⏱️ Ссылки действуют 5 минут, после чего они станут невалидными.",
+        reply_markup=inline_keyboard
+    )
 
 @dp.message(lambda message: message.text == "Поддержка")
 async def support(message: types.Message):
